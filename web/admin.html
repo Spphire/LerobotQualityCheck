@@ -3,7 +3,7 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>LeRobot 标注管理</title>
+    <title>LeRobot 标注审查</title>
     <link rel="stylesheet" href="/styles.css" />
     <link rel="stylesheet" href="/admin.css" />
   </head>
@@ -11,12 +11,12 @@
     <header class="admin-topbar">
       <div>
         <p class="admin-eyebrow">LeRobot QC</p>
-        <h1>标注管理</h1>
+        <h1>标注审查</h1>
         <p id="datasetPath" class="admin-subtitle"></p>
       </div>
       <nav class="admin-actions">
+        <a href="/admin/review" class="admin-link primary">可视化标注</a>
         <a href="/" class="admin-link">质检页面</a>
-        <a href="/admin/review" class="admin-link">可视化标注</a>
         <button id="refreshButton" type="button">刷新</button>
       </nav>
     </header>

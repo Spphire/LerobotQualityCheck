@@ -57,6 +57,12 @@ body.admin-page {
   background: var(--panel-2);
 }
 
+.admin-link.primary {
+  border-color: var(--blue);
+  background: var(--blue);
+  color: #fff;
+}
+
 .admin-main {
   display: grid;
   gap: 16px;

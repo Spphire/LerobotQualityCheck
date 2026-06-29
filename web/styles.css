@@ -199,6 +199,12 @@ textarea {
   border-color: #aeb9c2;
 }
 
+.sidebar-link.primary {
+  border-color: var(--blue);
+  background: var(--blue);
+  color: #fff;
+}
+
 .summary-panel {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
