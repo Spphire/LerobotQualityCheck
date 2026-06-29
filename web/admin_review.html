@@ -1,0 +1,196 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>LeRobot 管理员可视化标注</title>
+    <link rel="icon" href="data:," />
+    <link rel="stylesheet" href="/styles.css?v=20260629-admin-review" />
+    <script type="module" src="/app.js?v=20260629-admin-review"></script>
+  </head>
+  <body data-mode="admin-review">
+    <div class="app-shell">
+      <aside class="left-ui">
+        <section class="brand">
+          <div class="brand-mark">QC</div>
+          <div>
+            <h1>管理员可视化标注</h1>
+            <p id="datasetSubtitle">/mnt/nm_dataset/dataset/giftbox_0628_1912episodes</p>
+          </div>
+        </section>
+
+        <section class="control-panel dataset-panel">
+          <div class="sidebar-links">
+            <a class="sidebar-link" href="/admin">统计面板</a>
+            <a class="sidebar-link" href="/">普通质检</a>
+          </div>
+        </section>
+
+        <section class="control-panel">
+          <label>
+            <span>标注人</span>
+            <input id="userInput" type="text" spellcheck="false" />
+          </label>
+        </section>
+
+        <section class="control-panel dataset-panel">
+          <label>
+            <span>数据集</span>
+            <input id="datasetInput" type="text" spellcheck="false" value="/mnt/nm_dataset/dataset/giftbox_0628_1912episodes" />
+          </label>
+          <div class="two-buttons">
+            <button id="loadDatasetButton" type="button">加载</button>
+            <button id="refreshButton" type="button">刷新</button>
+          </div>
+        </section>
+
+        <section class="summary-panel">
+          <div>
+            <span class="metric-label">总数</span>
+            <strong id="totalCount">0</strong>
+          </div>
+          <div>
+            <span class="metric-label">当前用户已标</span>
+            <strong id="markedCount">0</strong>
+          </div>
+          <div>
+            <span class="metric-label">拒绝</span>
+            <strong id="rejectCount">0</strong>
+          </div>
+          <div>
+            <span class="metric-label">全局已标</span>
+            <strong id="allMarkedCount">0</strong>
+          </div>
+          <div class="progress">
+            <span id="progressBar"></span>
+          </div>
+        </section>
+
+        <section class="filter-panel">
+          <select id="statusFilter" aria-label="按状态筛选">
+            <option value="all">全部状态</option>
+            <option value="pending">待审</option>
+            <option value="accept">接收</option>
+            <option value="reject">拒绝</option>
+          </select>
+          <input id="searchInput" type="search" placeholder="搜索并跳转 episode / uuid / 任务" />
+        </section>
+
+        <div id="episodeList" class="episode-list" tabindex="-1"></div>
+
+        <section class="pager">
+          <button id="prevPageButton" type="button">上一页</button>
+          <span id="pageInfo">1 / 1</span>
+          <button id="nextPageButton" type="button">下一页</button>
+        </section>
+
+        <section class="export-controls">
+          <button id="exportJsonlButton" type="button">导出 JSONL</button>
+          <button id="exportCsvButton" type="button">导出 CSV</button>
+        </section>
+      </aside>
+
+      <main class="visual-workspace">
+        <section class="workspace-header">
+          <div>
+            <span id="currentStatus" class="status-pill pending">待审</span>
+            <h2 id="episodeTitle">选择一个 episode</h2>
+            <p id="episodeMeta"></p>
+          </div>
+          <div class="video-toolbar">
+            <button id="playAllButton" type="button">播放</button>
+            <button id="pauseAllButton" type="button">暂停</button>
+            <button id="restartAllButton" type="button">归零</button>
+            <select id="speedSelect">
+              <option value="0.5">0.5x</option>
+              <option value="1">1x</option>
+              <option value="1.5">1.5x</option>
+              <option value="2">2x</option>
+              <option value="3">3x</option>
+              <option value="5">5x</option>
+              <option value="10" selected>10x</option>
+            </select>
+            <label class="progress-control">
+              <input id="videoProgress" type="range" min="0" max="1000" value="0" />
+              <span id="videoTime">0%</span>
+            </label>
+          </div>
+        </section>
+
+        <section class="visual-grid">
+          <section class="trajectory-panel">
+            <header>
+              <span>3D 轨迹</span>
+              <span id="trajectoryState">等待数据</span>
+            </header>
+            <div id="trajectoryCanvas" class="trajectory-plot"></div>
+            <div class="trajectory-legend">
+              <span class="legend-left">左手</span>
+              <span class="legend-right">右手</span>
+            </div>
+          </section>
+
+          <section class="curve-column">
+            <article class="canvas-panel curve-panel">
+              <header><span>左手夹爪</span></header>
+              <canvas id="leftGripperCanvas"></canvas>
+            </article>
+            <article class="canvas-panel curve-panel">
+              <header><span>右手夹爪</span></header>
+              <canvas id="rightGripperCanvas"></canvas>
+            </article>
+          </section>
+        </section>
+
+        <section class="review-panel">
+          <div class="status-actions">
+            <button id="rejectButton" class="reject-action" type="button">拒绝</button>
+            <button id="pendingButton" class="pending-action" type="button">待审</button>
+            <button id="acceptButton" class="accept-action" type="button">接收</button>
+          </div>
+          <div class="keyboard-help" aria-label="键盘控制提示">
+            <span><kbd>←</kbd><kbd>→</kbd> 切换状态</span>
+            <span>管理员页不使用 <kbd>↑</kbd><kbd>↓</kbd> 切换 episode</span>
+            <span>点击夹爪曲线查看对应时间点的腕部画面</span>
+            <span id="saveState"></span>
+          </div>
+        </section>
+
+        <section class="quick-video-panel">
+          <h3>视频速播</h3>
+          <div class="quick-video-grid">
+            <article class="quick-video-card">
+              <header>左腕</header>
+              <video id="quickVideoLeft" class="video-canvas quick-video" muted playsinline loop preload="metadata"></video>
+            </article>
+            <article class="quick-video-card">
+              <header>头部</header>
+              <video id="quickVideoHead" class="video-canvas quick-video" muted playsinline loop preload="metadata"></video>
+            </article>
+            <article class="quick-video-card">
+              <header>右腕</header>
+              <video id="quickVideoRight" class="video-canvas quick-video" muted playsinline loop preload="metadata"></video>
+            </article>
+          </div>
+        </section>
+      </main>
+    </div>
+
+    <div id="videoModal" class="video-modal" hidden>
+      <section class="video-dialog" role="dialog" aria-modal="true" aria-labelledby="modalVideoTitle">
+        <header>
+          <h3 id="modalVideoTitle">腕部视频</h3>
+          <button id="closeVideoModalButton" type="button" aria-label="关闭">×</button>
+        </header>
+        <video id="modalVideo" muted playsinline loop></video>
+        <div class="modal-video-toolbar">
+          <button id="modalPlayPauseButton" type="button">暂停</button>
+          <input id="modalVideoProgress" type="range" min="0" max="1000" value="0" />
+          <span id="modalVideoTime">0:00 / 0:00</span>
+        </div>
+      </section>
+    </div>
+
+    <div id="hiddenVideos" hidden></div>
+  </body>
+</html>

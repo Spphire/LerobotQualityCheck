@@ -29,25 +29,36 @@ const ISSUE_OPTIONS = [
 ];
 
 const urlParams = new URLSearchParams(window.location.search);
+const IS_ADMIN_REVIEW = window.location.pathname.startsWith("/admin/review")
+  || document.body?.dataset.mode === "admin-review";
+const USER_STORAGE_KEY = IS_ADMIN_REVIEW ? "lqcp.adminReview.user" : "lqcp.user";
+const PAGE_STORAGE_KEY = IS_ADMIN_REVIEW ? "lqcp.adminReview.page" : "lqcp.page";
+
 const tokenFromUrl = urlParams.get("token");
 if (tokenFromUrl) {
   window.localStorage.setItem("lqcp.token", tokenFromUrl);
 }
 const userFromUrl = urlParams.get("user");
 if (userFromUrl) {
-  window.localStorage.setItem("lqcp.user", userFromUrl);
+  window.localStorage.setItem(USER_STORAGE_KEY, userFromUrl);
 }
 const datasetFromUrl = urlParams.get("dataset");
 if (datasetFromUrl) {
   window.localStorage.setItem("lqcp.dataset", datasetFromUrl);
 }
+const storedUser = window.localStorage.getItem(USER_STORAGE_KEY);
+const defaultUser = IS_ADMIN_REVIEW ? "admin" : `user-${Math.random().toString(16).slice(2, 6)}`;
+const initialPage = parseInt(urlParams.get("page") || window.localStorage.getItem(PAGE_STORAGE_KEY) || "1", 10);
+const initialStatus = urlParams.get("status") || "all";
 
 const state = {
+  adminReview: IS_ADMIN_REVIEW,
   token: tokenFromUrl || window.localStorage.getItem("lqcp.token") || "",
-  user: userFromUrl || window.localStorage.getItem("lqcp.user") || `user-${Math.random().toString(16).slice(2, 6)}`,
+  user: userFromUrl || storedUser || defaultUser,
   datasetPath: datasetFromUrl || DEFAULT_DATASET,
-  page: Number(window.localStorage.getItem("lqcp.page") || 1),
+  page: Number.isInteger(initialPage) && initialPage > 0 ? initialPage : 1,
   pageSize: 60,
+  status: IS_ADMIN_REVIEW && ["all", "pending", "accept", "reject"].includes(initialStatus) ? initialStatus : "all",
   total: 0,
   episodes: [],
   counts: null,
@@ -100,6 +111,7 @@ function initElements() {
     "rejectCount",
     "allMarkedCount",
     "progressBar",
+    "statusFilter",
     "searchInput",
     "episodeList",
     "prevPageButton",
@@ -168,6 +180,7 @@ function apiUrl(path, params = {}) {
 function syncBrowserUrl() {
   const params = paramsWithDataset({
     page: state.page > 1 ? state.page : "",
+    status: state.adminReview && state.status !== "all" ? state.status : "",
   });
   window.history.replaceState(null, "", `${window.location.pathname}?${params.toString()}`);
 }
@@ -1384,6 +1397,9 @@ function updateEpisodeInList(episodeIndex, label, episodeLabelSummary, episodeSu
 }
 
 function isEpisodeLocked(episode) {
+  if (state.adminReview) {
+    return false;
+  }
   return Array.isArray(episode?.locked_by) && episode.locked_by.length > 0;
 }
 
@@ -1421,6 +1437,7 @@ function currentListKey() {
     state.user,
     state.page,
     state.pageSize,
+    state.adminReview ? state.status : "",
   ].join("\u001f");
 }
 
@@ -1470,6 +1487,7 @@ async function fetchCurrentEpisodeListData({ refresh = false } = {}) {
   return requestJson(apiUrl("/api/episodes", {
     page: state.page,
     page_size: state.pageSize,
+    status: state.adminReview && state.status !== "all" ? state.status : "",
     refresh: refresh ? "1" : "",
   }));
 }
@@ -1482,8 +1500,8 @@ async function loadEpisodes({ refresh = false, keepSelection = true, preferLast 
   }
   el.datasetSubtitle.textContent = state.datasetPath;
   window.localStorage.setItem("lqcp.dataset", state.datasetPath);
-  window.localStorage.setItem("lqcp.user", state.user);
-  window.localStorage.setItem("lqcp.page", String(state.page));
+  window.localStorage.setItem(USER_STORAGE_KEY, state.user);
+  window.localStorage.setItem(PAGE_STORAGE_KEY, String(state.page));
   syncBrowserUrl();
   const data = await fetchCurrentEpisodeListData({ refresh });
   applyEpisodeListData(data);
@@ -1523,7 +1541,8 @@ async function loadEpisodes({ refresh = false, keepSelection = true, preferLast 
 async function selectEpisode(episodeIndex) {
   setSaveState("");
   updateNavigationAnchor(episodeIndex);
-  const current = await requestJson(apiUrl("/api/episode", { episode_index: episodeIndex }));
+  const episodePath = state.adminReview ? "/api/admin/episode" : "/api/episode";
+  const current = await requestJson(apiUrl(episodePath, { episode_index: episodeIndex }));
   renderCurrent(current);
 }
 
@@ -1537,20 +1556,31 @@ async function syncSharedState() {
     applyEpisodeListData(data);
 
     if (state.currentIndex !== null) {
-      const current = await requestJson(apiUrl("/api/episode_state", { episode_index: state.currentIndex }));
-      if (current.episode_index !== state.currentIndex) {
+      const statePath = state.adminReview ? "/api/admin/episode" : "/api/episode_state";
+      const current = await requestJson(apiUrl(statePath, { episode_index: state.currentIndex }));
+      const responseIndex = current.episode_index ?? current.episode?.episode_index;
+      if (responseIndex !== state.currentIndex) {
         return;
       }
       state.counts = current.counts || state.counts;
       state.users = current.users || state.users;
       if (state.current) {
-        state.current.label = current.label;
-        state.current.summary = current.summary;
+        state.current = {
+          ...state.current,
+          ...current,
+          label: current.label,
+          summary: current.summary,
+        };
       }
       renderSummary(state.counts);
       renderLabelForm(current.label || {});
       renderHeader(state.current);
-      updateEpisodeInList(state.currentIndex, current.label || {}, current.episode_label_summary, current.summary);
+      updateEpisodeInList(
+        state.currentIndex,
+        current.label || {},
+        current.episode_label_summary,
+        current.summary,
+      );
     }
   } catch (error) {
     console.debug("sync failed", error);
@@ -1560,6 +1590,9 @@ async function syncSharedState() {
 }
 
 function releaseCurrentPresence() {
+  if (state.adminReview) {
+    return;
+  }
   if (state.currentIndex === null) {
     return;
   }
@@ -1601,7 +1634,8 @@ async function saveLabel(status = state.selectedStatus) {
   state.selectedStatus = finalStatus;
   renderStatusButtons();
   setSaveState("保存中");
-  const result = await requestJson(apiUrl("/api/label"), {
+  const labelPath = state.adminReview ? "/api/admin/label" : "/api/label";
+  const result = await requestJson(apiUrl(labelPath), {
     method: "POST",
     body: JSON.stringify(payload),
   });
@@ -1617,7 +1651,11 @@ async function saveLabel(status = state.selectedStatus) {
     };
   }
   renderHeader(state.current);
-  updateEpisodeInList(state.currentIndex, result.label, result.episode_label_summary, result.summary);
+  if (state.adminReview && state.status !== "all") {
+    await loadEpisodes({ keepSelection: true });
+  } else {
+    updateEpisodeInList(state.currentIndex, result.label, result.episode_label_summary, result.summary);
+  }
   setSaveState("已保存");
 }
 
@@ -1760,6 +1798,7 @@ async function jumpToSearchResult() {
   const data = await requestJson(apiUrl("/api/episode_lookup", {
     q: query,
     page_size: state.pageSize,
+    status: state.adminReview && state.status !== "all" ? state.status : "",
   }));
   if (state.searchRequest !== requestId) {
     return;
@@ -1905,6 +1944,9 @@ function bindCurveHover(canvas, side) {
 function bindEvents() {
   el.datasetInput.value = state.datasetPath;
   el.userInput.value = state.user;
+  if (el.statusFilter) {
+    el.statusFilter.value = state.status;
+  }
   bindCurveHover(el.leftGripperCanvas, "left");
   bindCurveHover(el.rightGripperCanvas, "right");
 
@@ -1946,6 +1988,12 @@ function bindEvents() {
 
   el.refreshButton.addEventListener("click", async () => {
     await runWithErrors(() => loadEpisodes({ refresh: true }));
+  });
+
+  el.statusFilter?.addEventListener("change", async () => {
+    state.status = el.statusFilter.value;
+    state.page = 1;
+    await runWithErrors(() => loadEpisodes({ keepSelection: false }));
   });
 
   const debouncedEpisodeSearch = debounce(() => {
@@ -2071,6 +2119,9 @@ function bindEvents() {
     if (arrowKeys.has(event.key)) {
       event.preventDefault();
       event.stopPropagation();
+    }
+    if (state.adminReview && (event.key === "ArrowDown" || event.key === "ArrowUp")) {
+      return;
     }
     if (event.key === "ArrowRight") {
       await runWithErrors(() => cycleStatus(1));

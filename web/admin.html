@@ -16,6 +16,7 @@
       </div>
       <nav class="admin-actions">
         <a href="/" class="admin-link">质检页面</a>
+        <a href="/admin/review" class="admin-link">可视化标注</a>
         <button id="refreshButton" type="button">刷新</button>
       </nav>
     </header>
@@ -41,40 +42,6 @@
         <div>
           <span>待审</span>
           <strong id="pendingCount">0</strong>
-        </div>
-      </section>
-
-      <section class="admin-section admin-review-section">
-        <header>
-          <div>
-            <h2>管理员标注</h2>
-            <span>无视占用锁，点击列表后直接改最终状态</span>
-          </div>
-          <div class="admin-review-controls">
-            <select id="reviewStatusFilter" aria-label="按状态筛选">
-              <option value="all">全部状态</option>
-              <option value="pending">待审</option>
-              <option value="accept">接收</option>
-              <option value="reject">拒绝</option>
-            </select>
-            <button id="reviewPrevButton" type="button">上一页</button>
-            <span id="reviewPageInfo">1 / 1</span>
-            <button id="reviewNextButton" type="button">下一页</button>
-          </div>
-        </header>
-        <div class="admin-review-grid">
-          <div id="reviewEpisodeList" class="admin-episode-list" aria-label="Episode 列表"></div>
-          <aside class="admin-label-panel">
-            <span id="reviewSelectedStatus" class="status-pill pending">待审</span>
-            <h3 id="reviewSelectedTitle">选择一个 episode</h3>
-            <p id="reviewSelectedMeta"></p>
-            <div class="admin-status-actions">
-              <button id="reviewRejectButton" class="reject-action" type="button">拒绝</button>
-              <button id="reviewPendingButton" class="pending-action" type="button">待审</button>
-              <button id="reviewAcceptButton" class="accept-action" type="button">接收</button>
-            </div>
-            <p id="reviewMessage" class="admin-review-message"></p>
-          </aside>
         </div>
       </section>
 

@@ -1203,6 +1203,44 @@ def episode_lookup_payload(
 ) -> dict[str, Any]:
     search_text = (query_value(query, "q", "") or "").strip()
     page_size = parse_int(query_value(query, "page_size"), 60, 1, 200)
+    status_filter = query_value(query, "status", "all") or "all"
+    if status_filter == "unlabeled":
+        status_filter = "pending"
+
+    if status_filter != "all":
+        search_tokens = [token for token in re.split(r"\s+", search_text.lower()) if token]
+        locks = presence_snapshot(dataset_path, user)
+        filtered_count = 0
+        match_payload = None
+        match_position = None
+        for episode in dataset["episodes"]:
+            episode_index = int(episode["episode_index"])
+            label = label_for_episode(store, user, episode_index)
+            if review_status(label.get("status")) != status_filter:
+                continue
+            filtered_count += 1
+            haystack = episode_search_haystack(episode)
+            if match_payload is None and (not search_tokens or all(fuzzy_match_text(haystack, token) for token in search_tokens)):
+                match_payload = compact_episode(dataset_path, episode, label, store, locks.get(episode_index, []))
+                match_position = filtered_count
+        if match_payload is not None and match_position is not None:
+            return {
+                "query": search_text,
+                "match": match_payload,
+                "page": (match_position - 1) // page_size + 1,
+                "page_size": page_size,
+                "position": match_position,
+                "total": filtered_count,
+            }
+        return {
+            "query": search_text,
+            "match": None,
+            "page": None,
+            "page_size": page_size,
+            "position": None,
+            "total": filtered_count,
+        }
+
     position = find_episode_position(dataset, search_text)
     if position is None:
         return {
@@ -1327,6 +1365,8 @@ class QCRequestHandler(BaseHTTPRequestHandler):
                 self.handle_proxy_media(method, parsed)
             elif parsed.path in {"/admin", "/admin/"}:
                 self.handle_static(method, parsed, default_file="admin.html")
+            elif parsed.path in {"/admin/review", "/admin/review/"}:
+                self.handle_static(method, parsed, default_file="admin_review.html")
             else:
                 self.handle_static(method, parsed)
         except AppError as exc:
@@ -1460,6 +1500,11 @@ class QCRequestHandler(BaseHTTPRequestHandler):
         if method == "GET" and parsed.path == "/api/episode":
             episode_index = parse_int(query_value(query, "episode_index"), 0, 0, 10000000)
             heartbeat_episode(dataset_path, user, episode_index)
+            self.send_json(full_episode(dataset_path, dataset, episode_index, store, user))
+            return
+
+        if method == "GET" and parsed.path == "/api/admin/episode":
+            episode_index = parse_int(query_value(query, "episode_index"), 0, 0, 10000000)
             self.send_json(full_episode(dataset_path, dataset, episode_index, store, user))
             return
 
@@ -1648,6 +1693,8 @@ class QCRequestHandler(BaseHTTPRequestHandler):
         if path in {"", "/"}:
             rel = default_file
         elif path in {"/admin", "/admin/"}:
+            rel = default_file
+        elif path in {"/admin/review", "/admin/review/"}:
             rel = default_file
         else:
             rel = posixpath.normpath(path.lstrip("/"))
