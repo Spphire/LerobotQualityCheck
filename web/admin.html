@@ -1,0 +1,113 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>LeRobot 标注管理</title>
+    <link rel="stylesheet" href="/styles.css" />
+    <link rel="stylesheet" href="/admin.css" />
+  </head>
+  <body class="admin-page">
+    <header class="admin-topbar">
+      <div>
+        <p class="admin-eyebrow">LeRobot QC</p>
+        <h1>标注管理</h1>
+        <p id="datasetPath" class="admin-subtitle"></p>
+      </div>
+      <nav class="admin-actions">
+        <a href="/" class="admin-link">质检页面</a>
+        <button id="refreshButton" type="button">刷新</button>
+      </nav>
+    </header>
+
+    <main class="admin-main">
+      <section class="admin-metrics" aria-label="全局统计">
+        <div>
+          <span>总数</span>
+          <strong id="totalCount">0</strong>
+        </div>
+        <div>
+          <span>已标</span>
+          <strong id="markedCount">0</strong>
+        </div>
+        <div>
+          <span>接收</span>
+          <strong id="acceptCount">0</strong>
+        </div>
+        <div>
+          <span>拒绝</span>
+          <strong id="rejectCount">0</strong>
+        </div>
+        <div>
+          <span>待审</span>
+          <strong id="pendingCount">0</strong>
+        </div>
+      </section>
+
+      <section class="admin-section">
+        <header>
+          <h2>用户标注情况</h2>
+          <span id="updatedAt"></span>
+        </header>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>用户</th>
+                <th>已标</th>
+                <th>接收</th>
+                <th>拒绝</th>
+                <th>待审</th>
+                <th>事件数</th>
+                <th>最近活动</th>
+              </tr>
+            </thead>
+            <tbody id="usersBody"></tbody>
+          </table>
+        </div>
+      </section>
+
+      <section class="admin-grid">
+        <section class="admin-section">
+          <header>
+            <h2>当前占用</h2>
+            <span id="activeCount">0</span>
+          </header>
+          <div class="table-wrap compact">
+            <table>
+              <thead>
+                <tr>
+                  <th>Episode</th>
+                  <th>用户</th>
+                </tr>
+              </thead>
+              <tbody id="activeBody"></tbody>
+            </table>
+          </div>
+        </section>
+
+        <section class="admin-section">
+          <header>
+            <h2>最近标注</h2>
+            <span id="recentCount">0</span>
+          </header>
+          <div class="table-wrap compact">
+            <table>
+              <thead>
+                <tr>
+                  <th>Episode</th>
+                  <th>状态</th>
+                  <th>用户</th>
+                  <th>时间</th>
+                </tr>
+              </thead>
+              <tbody id="recentBody"></tbody>
+            </table>
+          </div>
+        </section>
+      </section>
+    </main>
+
+    <script src="/admin.js"></script>
+  </body>
+</html>

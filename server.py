@@ -829,6 +829,66 @@ def user_summaries(dataset: dict[str, Any], store: dict[str, Any]) -> list[dict[
     return users
 
 
+def label_event_user_summaries(dataset_path: Path) -> dict[str, dict[str, Any]]:
+    with connect_label_db(dataset_path) as conn:
+        init_label_db(conn)
+        import_json_labels_if_needed(dataset_path, conn)
+        rows = conn.execute(
+            """
+            SELECT user, COUNT(*) AS event_count, MAX(created_at) AS last_event_at
+            FROM label_events
+            WHERE dataset_id = ?
+            GROUP BY user
+            """,
+            (dataset_id(dataset_path),),
+        ).fetchall()
+    return {
+        row["user"]: {
+            "event_count": int(row["event_count"] or 0),
+            "last_event_at": row["last_event_at"] or "",
+        }
+        for row in rows
+    }
+
+
+def admin_payload(dataset_path: Path, dataset: dict[str, Any], store: dict[str, Any]) -> dict[str, Any]:
+    current_users = {item["user"]: item for item in user_summaries(dataset, store)}
+    event_users = label_event_user_summaries(dataset_path)
+    users = []
+    for user in sorted(set(current_users) | set(event_users)):
+        current = current_users.get(user) or {
+            "user": user,
+            "counts": {"total": len(dataset["episodes"]), "reject": 0, "pending": len(dataset["episodes"]), "accept": 0, "marked": 0, "all_marked": 0},
+        }
+        users.append({
+            "user": user,
+            "counts": current["counts"],
+            **event_users.get(user, {"event_count": 0, "last_event_at": ""}),
+        })
+
+    labels = list((store.get("labels") or {}).values())
+    recent_labels = sorted(labels, key=lambda item: str(item.get("updated_at", "")), reverse=True)[:80]
+    presence = presence_snapshot(dataset_path, None)
+    active = [
+        {"episode_index": episode_index, "episode_name": f"episode_{episode_index:06d}", "users": users}
+        for episode_index, users in sorted(presence.items())
+    ]
+    return {
+        "dataset_path": str(dataset_path),
+        "dataset_id": dataset_id(dataset_path),
+        "generated_at": utc_now(),
+        "counts": status_counts_from_label_map(dataset, store.get("labels") or {}),
+        "users": users,
+        "recent_labels": recent_labels,
+        "active": active,
+        "paths": {
+            "labels_db": str(labels_db_path(dataset_path)),
+            "labels_json": str(labels_path(dataset_path)),
+            "labels_jsonl": str(labels_jsonl_path(dataset_path)),
+        },
+    }
+
+
 def compact_episode(
     dataset_path: Path,
     episode: dict[str, Any],
@@ -1197,6 +1257,8 @@ class QCRequestHandler(BaseHTTPRequestHandler):
                 self.handle_media(method, parsed)
             elif parsed.path == "/proxy_media":
                 self.handle_proxy_media(method, parsed)
+            elif parsed.path in {"/admin", "/admin/"}:
+                self.handle_static(method, parsed, default_file="admin.html")
             else:
                 self.handle_static(method, parsed)
         except AppError as exc:
@@ -1290,6 +1352,10 @@ class QCRequestHandler(BaseHTTPRequestHandler):
                     "labels_db_path": str(labels_db_path(dataset_path)),
                 }
             )
+            return
+
+        if method == "GET" and parsed.path == "/api/admin":
+            self.send_json(admin_payload(dataset_path, dataset, store))
             return
 
         if method == "GET" and parsed.path == "/api/episodes":
@@ -1472,12 +1538,14 @@ class QCRequestHandler(BaseHTTPRequestHandler):
             raise AppError("Proxy media file not found", 404)
         self.send_file(file_path, cache_control="public, max-age=86400")
 
-    def handle_static(self, method: str, parsed: Any) -> None:
+    def handle_static(self, method: str, parsed: Any, default_file: str = "index.html") -> None:
         if method not in {"GET", "HEAD"}:
             raise AppError("Method not allowed", 405)
         path = unquote(parsed.path)
         if path in {"", "/"}:
-            rel = "index.html"
+            rel = default_file
+        elif path in {"/admin", "/admin/"}:
+            rel = default_file
         else:
             rel = posixpath.normpath(path.lstrip("/"))
         if rel.startswith("../") or rel == "..":
