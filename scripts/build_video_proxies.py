@@ -12,6 +12,12 @@ from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_DATASET = Path("/mnt/nm_dataset/dataset/giftbox_0628_1912episodes")
+EPISODE_RE = re.compile(r"episode_(\d+)\.mp4$")
+CAMERA_ORDER = {
+    "observation.images.image": 0,
+    "observation.images.wrist_image_1": 1,
+    "observation.images.wrist_image_2": 2,
+}
 
 
 def dataset_id(dataset_path: Path) -> str:
@@ -21,7 +27,13 @@ def dataset_id(dataset_path: Path) -> str:
 
 
 def video_inputs(dataset_path: Path) -> list[Path]:
-    return sorted((dataset_path / "videos").glob("chunk-*/*/episode_*.mp4"))
+    def sort_key(path: Path) -> tuple[int, int, str]:
+        match = EPISODE_RE.match(path.name)
+        episode = int(match.group(1)) if match else 10**12
+        camera = path.parent.name
+        return (episode, CAMERA_ORDER.get(camera, 99), camera)
+
+    return sorted((dataset_path / "videos").glob("chunk-*/*/episode_*.mp4"), key=sort_key)
 
 
 def needs_rebuild(src: Path, dst: Path, overwrite: bool) -> bool:
