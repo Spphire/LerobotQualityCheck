@@ -3,6 +3,7 @@ __pycache__/
 qc_results/
 exports/
 verification/
+video_proxy/
 server.log
 server.dev.log
 .env

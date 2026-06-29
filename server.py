@@ -26,6 +26,7 @@ DEFAULT_DATASET = "/mnt/nm_dataset/dataset/giftbox_0628_1912episodes"
 PROJECT_ROOT = Path(__file__).resolve().parent
 STATIC_ROOT = PROJECT_ROOT / "web"
 QC_ROOT = PROJECT_ROOT / "qc_results"
+VIDEO_PROXY_ROOT = PROJECT_ROOT / "video_proxy"
 ALLOWED_DATASET_ROOT = Path("/mnt").resolve()
 
 STATUS_VALUES = {"reject", "pending", "accept", "unlabeled"}
@@ -381,6 +382,24 @@ def scan_data_files(dataset_path: Path) -> dict[int, str]:
     return data_files
 
 
+def safe_rel_media_path(raw_rel: str | None) -> PurePosixPath:
+    if not raw_rel:
+        raise AppError("Missing media path", 400)
+    rel_path = PurePosixPath(unquote(raw_rel))
+    if rel_path.is_absolute() or ".." in rel_path.parts:
+        raise AppError("Invalid media path", 400)
+    return rel_path
+
+
+def proxy_video_path(dataset_path: Path, rel_path: str) -> Path:
+    rel = safe_rel_media_path(rel_path)
+    proxy_root = (VIDEO_PROXY_ROOT / dataset_id(dataset_path)).resolve()
+    file_path = (proxy_root / Path(*rel.parts)).resolve()
+    if str(file_path) != str(proxy_root) and not str(file_path).startswith(str(proxy_root) + os.sep):
+        raise AppError("Invalid proxy media path", 403)
+    return file_path
+
+
 def media_url(dataset_path: Path, rel_path: str) -> str:
     params = {
         "dataset": str(dataset_path),
@@ -389,7 +408,8 @@ def media_url(dataset_path: Path, rel_path: str) -> str:
     token = SERVER_CONFIG.get("token")
     if token:
         params["token"] = token
-    return "/media?" + urlencode(params)
+    endpoint = "/proxy_media" if proxy_video_path(dataset_path, rel_path).is_file() else "/media"
+    return endpoint + "?" + urlencode(params)
 
 
 def load_dataset(dataset_path: Path, refresh: bool = False) -> dict[str, Any]:
@@ -866,6 +886,8 @@ class QCRequestHandler(BaseHTTPRequestHandler):
                 self.handle_api(method, parsed)
             elif parsed.path == "/media":
                 self.handle_media(method, parsed)
+            elif parsed.path == "/proxy_media":
+                self.handle_proxy_media(method, parsed)
             else:
                 self.handle_static(method, parsed)
         except AppError as exc:
@@ -881,7 +903,7 @@ class QCRequestHandler(BaseHTTPRequestHandler):
         if not token:
             return True
         path = parsed.path
-        if not path.startswith("/api/") and path != "/media":
+        if not path.startswith("/api/") and path not in {"/media", "/proxy_media"}:
             return True
         query = parse_qs(parsed.query)
         supplied = query_value(query, "token") or self.headers.get("X-LQCP-Token") or ""
@@ -1144,18 +1166,23 @@ class QCRequestHandler(BaseHTTPRequestHandler):
             raise AppError("Method not allowed", 405)
         query = parse_qs(parsed.query)
         dataset_path = safe_dataset_path(query_value(query, "dataset") or query_value(query, "dataset_path"))
-        rel = query_value(query, "rel")
-        if not rel:
-            raise AppError("Missing media path", 400)
-        rel_path = PurePosixPath(unquote(rel))
-        if rel_path.is_absolute() or ".." in rel_path.parts:
-            raise AppError("Invalid media path", 400)
+        rel_path = safe_rel_media_path(query_value(query, "rel"))
         file_path = (dataset_path / Path(*rel_path.parts)).resolve()
         if str(file_path) != str(dataset_path) and not str(file_path).startswith(str(dataset_path) + os.sep):
             raise AppError("Invalid media path", 403)
         if not file_path.is_file():
             raise AppError("Media file not found", 404)
         self.send_file(file_path, cache_control="public, max-age=3600")
+
+    def handle_proxy_media(self, method: str, parsed: Any) -> None:
+        if method not in {"GET", "HEAD"}:
+            raise AppError("Method not allowed", 405)
+        query = parse_qs(parsed.query)
+        dataset_path = safe_dataset_path(query_value(query, "dataset") or query_value(query, "dataset_path"))
+        file_path = proxy_video_path(dataset_path, query_value(query, "rel"))
+        if not file_path.is_file():
+            raise AppError("Proxy media file not found", 404)
+        self.send_file(file_path, cache_control="public, max-age=86400")
 
     def handle_static(self, method: str, parsed: Any) -> None:
         if method not in {"GET", "HEAD"}:
