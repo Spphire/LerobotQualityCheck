@@ -11,6 +11,7 @@ import mimetypes
 import os
 import posixpath
 import re
+import sqlite3
 import sys
 import threading
 import time
@@ -152,6 +153,10 @@ def labels_jsonl_path(dataset_path: Path) -> Path:
     return labels_dir(dataset_path) / "labels.jsonl"
 
 
+def labels_db_path(dataset_path: Path) -> Path:
+    return labels_dir(dataset_path) / "labels.db"
+
+
 def empty_label_store(dataset_path: Path) -> dict[str, Any]:
     return {
         "schema_version": 3,
@@ -224,13 +229,166 @@ def normalize_label_store(dataset_path: Path, payload: Any) -> dict[str, Any]:
     return store
 
 
-def load_label_store(dataset_path: Path) -> dict[str, Any]:
+def connect_label_db(dataset_path: Path) -> sqlite3.Connection:
+    labels_dir(dataset_path).mkdir(parents=True, exist_ok=True)
+    conn = sqlite3.connect(labels_db_path(dataset_path), timeout=30)
+    conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute("PRAGMA busy_timeout=5000")
+    conn.execute("PRAGMA foreign_keys=ON")
+    return conn
+
+
+def init_label_db(conn: sqlite3.Connection) -> None:
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS labels (
+            dataset_id TEXT NOT NULL,
+            episode_index INTEGER NOT NULL,
+            dataset_path TEXT NOT NULL,
+            user TEXT NOT NULL,
+            annotator TEXT NOT NULL,
+            episode_name TEXT NOT NULL,
+            episode_uuid TEXT NOT NULL DEFAULT '',
+            status TEXT NOT NULL,
+            issues_json TEXT NOT NULL DEFAULT '[]',
+            note TEXT NOT NULL DEFAULT '',
+            updated_at TEXT NOT NULL,
+            PRIMARY KEY (dataset_id, episode_index)
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS label_events (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            dataset_id TEXT NOT NULL,
+            episode_index INTEGER NOT NULL,
+            user TEXT NOT NULL,
+            old_status TEXT,
+            new_status TEXT NOT NULL,
+            label_json TEXT NOT NULL,
+            created_at TEXT NOT NULL
+        )
+        """
+    )
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_label_events_episode ON label_events(dataset_id, episode_index, id)")
+    conn.commit()
+
+
+def db_row_to_label(row: sqlite3.Row) -> dict[str, Any]:
+    try:
+        issues = json.loads(row["issues_json"] or "[]")
+    except json.JSONDecodeError:
+        issues = []
+    if not isinstance(issues, list):
+        issues = []
+    return {
+        "dataset_id": row["dataset_id"],
+        "dataset_path": row["dataset_path"],
+        "user": row["user"],
+        "annotator": row["annotator"],
+        "episode_index": int(row["episode_index"]),
+        "episode_name": row["episode_name"],
+        "episode_uuid": row["episode_uuid"],
+        "status": review_status(row["status"]),
+        "issues": issues,
+        "note": row["note"],
+        "updated_at": row["updated_at"],
+    }
+
+
+def store_from_label_db(dataset_path: Path, conn: sqlite3.Connection) -> dict[str, Any]:
+    store = empty_label_store(dataset_path)
+    rows = conn.execute(
+        """
+        SELECT dataset_id, episode_index, dataset_path, user, annotator, episode_name,
+               episode_uuid, status, issues_json, note, updated_at
+        FROM labels
+        WHERE dataset_id = ?
+        ORDER BY episode_index
+        """,
+        (dataset_id(dataset_path),),
+    ).fetchall()
+    labels: dict[str, dict[str, Any]] = {}
+    labels_by_user: dict[str, dict[str, Any]] = {}
+    for row in rows:
+        label = db_row_to_label(row)
+        key = str(label["episode_index"])
+        labels[key] = label
+        labels_by_user.setdefault(label["user"], {})[key] = label
+    store["labels"] = labels
+    store["labels_by_user"] = labels_by_user
+    if rows:
+        store["updated_at"] = max(str(row["updated_at"]) for row in rows)
+    return store
+
+
+def import_json_labels_if_needed(dataset_path: Path, conn: sqlite3.Connection) -> None:
+    count = conn.execute("SELECT COUNT(*) FROM labels WHERE dataset_id = ?", (dataset_id(dataset_path),)).fetchone()[0]
+    if count:
+        return
     payload = read_json(labels_path(dataset_path), fallback=None)
-    return normalize_label_store(dataset_path, payload)
+    store = normalize_label_store(dataset_path, payload)
+    labels = store.get("labels") or {}
+    if not labels:
+        return
+    now = utc_now()
+    for key, label in labels.items():
+        normalized = normalize_label_entry(label, str(label.get("user") or "default"))
+        if not normalized:
+            continue
+        episode_index = int(normalized.get("episode_index") or key)
+        normalized["episode_index"] = episode_index
+        normalized["dataset_id"] = dataset_id(dataset_path)
+        normalized["dataset_path"] = str(dataset_path)
+        normalized.setdefault("episode_name", f"episode_{episode_index:06d}")
+        normalized.setdefault("episode_uuid", "")
+        normalized.setdefault("issues", [])
+        normalized.setdefault("note", "")
+        normalized.setdefault("updated_at", now)
+        conn.execute(
+            """
+            INSERT OR REPLACE INTO labels (
+                dataset_id, episode_index, dataset_path, user, annotator, episode_name,
+                episode_uuid, status, issues_json, note, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                normalized["dataset_id"],
+                episode_index,
+                normalized["dataset_path"],
+                normalized["user"],
+                normalized["annotator"],
+                normalized["episode_name"],
+                normalized["episode_uuid"],
+                review_status(normalized["status"]),
+                json.dumps(normalized.get("issues") or [], ensure_ascii=False),
+                str(normalized.get("note") or ""),
+                normalized["updated_at"],
+            ),
+        )
+        conn.execute(
+            """
+            INSERT INTO label_events (
+                dataset_id, episode_index, user, old_status, new_status, label_json, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                normalized["dataset_id"],
+                episode_index,
+                normalized["user"],
+                None,
+                review_status(normalized["status"]),
+                json.dumps(normalized, ensure_ascii=False, default=json_default),
+                now,
+            ),
+        )
+    conn.commit()
 
 
-def save_label_store(dataset_path: Path, store: dict[str, Any]) -> None:
-    store["schema_version"] = 3
+def export_label_store(dataset_path: Path, store: dict[str, Any]) -> None:
+    store["schema_version"] = 4
     store["dataset_path"] = str(dataset_path)
     store["dataset_id"] = dataset_id(dataset_path)
     store["updated_at"] = utc_now()
@@ -242,6 +400,157 @@ def save_label_store(dataset_path: Path, store: dict[str, Any]) -> None:
     for row in label_rows_from_store(dataset_path, {}, store):
         lines.append(json.dumps(row, ensure_ascii=False, default=json_default))
     write_text_atomic(labels_jsonl_path(dataset_path), "\n".join(lines) + ("\n" if lines else ""))
+
+
+def load_label_store(dataset_path: Path) -> dict[str, Any]:
+    with connect_label_db(dataset_path) as conn:
+        init_label_db(conn)
+        import_json_labels_if_needed(dataset_path, conn)
+        return store_from_label_db(dataset_path, conn)
+
+
+def save_label_store(dataset_path: Path, store: dict[str, Any]) -> None:
+    export_label_store(dataset_path, store)
+
+
+def write_label_db(
+    dataset_path: Path,
+    dataset: dict[str, Any],
+    user: str,
+    episode_index: int,
+    status: str,
+    issues: list[str],
+    note: str,
+) -> dict[str, Any]:
+    now = utc_now()
+    with connect_label_db(dataset_path) as conn:
+        init_label_db(conn)
+        import_json_labels_if_needed(dataset_path, conn)
+        conn.execute("BEGIN IMMEDIATE")
+        existing_row = conn.execute(
+            """
+            SELECT dataset_id, episode_index, dataset_path, user, annotator, episode_name,
+                   episode_uuid, status, issues_json, note, updated_at
+            FROM labels
+            WHERE dataset_id = ? AND episode_index = ?
+            """,
+            (dataset_id(dataset_path), episode_index),
+        ).fetchone()
+        existing = db_row_to_label(existing_row) if existing_row else None
+        old_status = existing.get("status") if existing else None
+
+        if status == "unlabeled":
+            conn.execute(
+                "DELETE FROM labels WHERE dataset_id = ? AND episode_index = ?",
+                (dataset_id(dataset_path), episode_index),
+            )
+            event_label = existing or {
+                "dataset_id": dataset_id(dataset_path),
+                "dataset_path": str(dataset_path),
+                "user": user,
+                "annotator": user,
+                "episode_index": episode_index,
+                "episode_name": f"episode_{episode_index:06d}",
+                "episode_uuid": "",
+                "status": "unlabeled",
+                "issues": [],
+                "note": "",
+                "updated_at": now,
+            }
+            event_label = dict(event_label, status="unlabeled", updated_at=now, user=user, annotator=user)
+            conn.execute(
+                """
+                INSERT INTO label_events (
+                    dataset_id, episode_index, user, old_status, new_status, label_json, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    dataset_id(dataset_path),
+                    episode_index,
+                    user,
+                    old_status,
+                    "unlabeled",
+                    json.dumps(event_label, ensure_ascii=False, default=json_default),
+                    now,
+                ),
+            )
+        else:
+            if existing and existing.get("user") != user and review_status(existing.get("status")) != review_status(status):
+                conn.rollback()
+                raise AppError(
+                    f"Episode {episode_index} already labeled {existing.get('status')} by {existing.get('user')}",
+                    409,
+                )
+            if existing and existing.get("user") != user and review_status(existing.get("status")) == review_status(status):
+                label = existing
+            else:
+                episode = dataset["episode_by_index"][episode_index]
+                label = {
+                    "dataset_id": dataset_id(dataset_path),
+                    "dataset_path": str(dataset_path),
+                    "user": user,
+                    "annotator": user,
+                    "episode_index": episode_index,
+                    "episode_name": f"episode_{episode_index:06d}",
+                    "episode_uuid": episode.get("episode_uuid", ""),
+                    "status": status,
+                    "issues": issues,
+                    "note": note,
+                    "updated_at": now,
+                }
+                conn.execute(
+                    """
+                    INSERT INTO labels (
+                        dataset_id, episode_index, dataset_path, user, annotator, episode_name,
+                        episode_uuid, status, issues_json, note, updated_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(dataset_id, episode_index) DO UPDATE SET
+                        dataset_path = excluded.dataset_path,
+                        user = excluded.user,
+                        annotator = excluded.annotator,
+                        episode_name = excluded.episode_name,
+                        episode_uuid = excluded.episode_uuid,
+                        status = excluded.status,
+                        issues_json = excluded.issues_json,
+                        note = excluded.note,
+                        updated_at = excluded.updated_at
+                    """,
+                    (
+                        label["dataset_id"],
+                        episode_index,
+                        label["dataset_path"],
+                        label["user"],
+                        label["annotator"],
+                        label["episode_name"],
+                        label["episode_uuid"],
+                        review_status(label["status"]),
+                        json.dumps(label.get("issues") or [], ensure_ascii=False),
+                        label["note"],
+                        label["updated_at"],
+                    ),
+                )
+            conn.execute(
+                """
+                INSERT INTO label_events (
+                    dataset_id, episode_index, user, old_status, new_status, label_json, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    dataset_id(dataset_path),
+                    episode_index,
+                    user,
+                    old_status,
+                    review_status(label["status"]),
+                    json.dumps(label, ensure_ascii=False, default=json_default),
+                    now,
+                ),
+            )
+
+        conn.commit()
+        store = store_from_label_db(dataset_path, conn)
+
+    export_label_store(dataset_path, store)
+    return store
 
 
 def labels_for_user(store: dict[str, Any], user: str) -> dict[str, Any]:
@@ -978,6 +1287,7 @@ class QCRequestHandler(BaseHTTPRequestHandler):
                     "users": user_summaries(dataset, store),
                     "labels_path": str(labels_path(dataset_path)),
                     "labels_jsonl_path": str(labels_jsonl_path(dataset_path)),
+                    "labels_db_path": str(labels_db_path(dataset_path)),
                 }
             )
             return
@@ -1109,38 +1419,14 @@ class QCRequestHandler(BaseHTTPRequestHandler):
             if status not in STATUS_VALUES:
                 raise AppError(f"Invalid status: {status}", 400)
 
+            issues = payload.get("issues") or []
+            if not isinstance(issues, list):
+                raise AppError("issues must be a list", 400)
+            issues = [str(item)[:80] for item in issues if str(item).strip()]
+            note = str(payload.get("note") or "")[:2000]
+
             with LABEL_LOCK:
-                store = load_label_store(dataset_path)
-                user_labels = labels_for_user(store, user)
-                labels = global_labels(store)
-                key = str(episode_index)
-                if status == "unlabeled":
-                    user_labels.pop(key, None)
-                    labels.pop(key, None)
-                else:
-                    issues = payload.get("issues") or []
-                    if not isinstance(issues, list):
-                        raise AppError("issues must be a list", 400)
-                    issues = [str(item)[:80] for item in issues if str(item).strip()]
-                    note = str(payload.get("note") or "")[:2000]
-                    episode = dataset["episode_by_index"][episode_index]
-                    label = {
-                        "dataset_id": dataset_id(dataset_path),
-                        "dataset_path": str(dataset_path),
-                        "user": user,
-                        "annotator": user,
-                        "episode_index": episode_index,
-                        "episode_name": f"episode_{episode_index:06d}",
-                        "episode_uuid": episode.get("episode_uuid", ""),
-                        "status": status,
-                        "issues": issues,
-                        "note": note,
-                        "updated_at": utc_now(),
-                    }
-                    labels[key] = label
-                    user_labels[key] = label
-                save_label_store(dataset_path, store)
-                updated_store = store
+                updated_store = write_label_db(dataset_path, dataset, user, episode_index, status, issues, note)
 
             heartbeat_episode(dataset_path, user, episode_index)
             locked_by = presence_snapshot(dataset_path, user).get(episode_index, [])
@@ -1155,6 +1441,8 @@ class QCRequestHandler(BaseHTTPRequestHandler):
                     "counts": status_counts(dataset, updated_store, user),
                     "users": user_summaries(dataset, updated_store),
                     "labels_path": str(labels_path(dataset_path)),
+                    "labels_jsonl_path": str(labels_jsonl_path(dataset_path)),
+                    "labels_db_path": str(labels_db_path(dataset_path)),
                 }
             )
             return
