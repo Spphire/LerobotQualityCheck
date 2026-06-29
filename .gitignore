@@ -4,5 +4,5 @@ qc_results/
 exports/
 verification/
 server.log
+server.dev.log
 .env
-

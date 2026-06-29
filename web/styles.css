@@ -491,6 +491,7 @@ canvas {
 }
 
 .video-canvas,
+.quick-video,
 .curve-panel canvas,
 #trajectoryCanvas {
   background: var(--canvas);
@@ -499,6 +500,13 @@ canvas {
 .video-canvas {
   height: auto;
   aspect-ratio: var(--video-aspect, 16 / 9);
+}
+
+.quick-video {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
 }
 
 .trajectory-panel {
@@ -701,7 +709,8 @@ canvas {
   font-size: 13px;
 }
 
-.quick-video-card canvas {
+.quick-video-card canvas,
+.quick-video-card video {
   width: 100%;
   height: 100%;
 }

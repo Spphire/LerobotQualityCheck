@@ -85,6 +85,7 @@ const state = {
   lastTrajectoryHighlightFrame: null,
   lastTrajectoryHighlightAt: 0,
   framesRequest: 0,
+  lastPlaybackUiAt: 0,
 };
 
 let Plotly3D = null;
@@ -130,9 +131,9 @@ function initElements() {
     "trajectoryState",
     "leftGripperCanvas",
     "rightGripperCanvas",
-    "quickVideoCanvasLeft",
-    "quickVideoCanvasHead",
-    "quickVideoCanvasRight",
+    "quickVideoLeft",
+    "quickVideoHead",
+    "quickVideoRight",
     "rejectButton",
     "pendingButton",
     "acceptButton",
@@ -476,12 +477,15 @@ function renderStatusButtons() {
 function stopHiddenVideos() {
   state.hiddenVideos.forEach((video) => {
     video.pause();
+    video.onloadedmetadata = null;
+    video.onloadeddata = null;
+    video.onseeked = null;
+    video.onended = null;
     video.removeAttribute("src");
     video.load();
   });
   state.hiddenVideos = [];
   state.headVideoIndex = 0;
-  el.hiddenVideos.innerHTML = "";
   updateProgressUI(0);
 }
 
@@ -522,18 +526,29 @@ function renderCameraCanvases(videos) {
   };
   setHeadVideoSize(16 / 9);
   if (!videos.length) {
-    drawHeadVideoCanvas();
+    drawQuickVideoCanvases();
     return;
   }
-  videos.forEach((videoInfo, index) => {
-    const video = document.createElement("video");
+  quickVideoEntries().forEach(([key, video, message]) => {
+    if (!video) {
+      return;
+    }
+    const index = state.quickVideoIndexes[key];
+    const videoInfo = videos[index];
+    if (!videoInfo) {
+      video.pause();
+      video.removeAttribute("src");
+      video.load();
+      video.dataset.emptyMessage = message;
+      return;
+    }
     video.src = videoInfo.url;
     video.muted = true;
     video.loop = true;
-    video.preload = "auto";
+    video.preload = "metadata";
     video.playsInline = true;
     video.crossOrigin = "same-origin";
-    video.addEventListener("loadedmetadata", () => {
+    video.onloadedmetadata = () => {
       if (index === state.headVideoIndex && video.videoWidth && video.videoHeight && el.headVideoCanvas) {
         el.headVideoCanvas.style.setProperty("--video-aspect", `${video.videoWidth} / ${video.videoHeight}`);
         setHeadVideoSize(video.videoWidth / video.videoHeight);
@@ -541,26 +556,22 @@ function renderCameraCanvases(videos) {
       syncQuickVideoAspect(index, video);
       video.playbackRate = Number(el.speedSelect.value || 1);
       syncVideoTimes(true);
-      drawHeadVideoCanvas();
       drawQuickVideoCanvases();
-    });
-    video.addEventListener("loadeddata", () => {
-      drawHeadVideoCanvas();
+    };
+    video.onloadeddata = () => {
       drawQuickVideoCanvases();
-    });
-    video.addEventListener("seeked", () => {
-      drawHeadVideoCanvas();
+    };
+    video.onseeked = () => {
       drawQuickVideoCanvases();
-    });
-    video.addEventListener("ended", () => {
+    };
+    video.onended = () => {
       setAllVideoProgress(0);
       playAll();
-    });
-    el.hiddenVideos.appendChild(video);
+    };
     state.hiddenVideos[index] = video;
+    video.load();
   });
   updateProgressUI(0);
-  drawHeadVideoCanvas();
   drawQuickVideoCanvases();
   applyPlaybackRate();
   window.setTimeout(playAll, 80);
@@ -628,14 +639,14 @@ function drawVideoToCanvas(canvas, video, emptyMessage = "无视频") {
 }
 
 function drawHeadVideoCanvas() {
-  drawVideoToCanvas(el.headVideoCanvas, state.hiddenVideos[state.headVideoIndex], "无头部视频");
+  return;
 }
 
-function quickCanvasEntries() {
+function quickVideoEntries() {
   return [
-    ["left", el.quickVideoCanvasLeft, "无左腕视频"],
-    ["head", el.quickVideoCanvasHead, "无头部视频"],
-    ["right", el.quickVideoCanvasRight, "无右腕视频"],
+    ["left", el.quickVideoLeft, "无左腕视频"],
+    ["head", el.quickVideoHead, "无头部视频"],
+    ["right", el.quickVideoRight, "无右腕视频"],
   ];
 }
 
@@ -643,16 +654,20 @@ function syncQuickVideoAspect(index, video) {
   if (!video.videoWidth || !video.videoHeight) {
     return;
   }
-  quickCanvasEntries().forEach(([key, canvas]) => {
-    if (state.quickVideoIndexes[key] === index && canvas) {
-      canvas.style.setProperty("--video-aspect", `${video.videoWidth} / ${video.videoHeight}`);
+  quickVideoEntries().forEach(([key, quickVideo]) => {
+    if (state.quickVideoIndexes[key] === index && quickVideo) {
+      quickVideo.style.setProperty("--video-aspect", `${video.videoWidth} / ${video.videoHeight}`);
     }
   });
 }
 
 function drawQuickVideoCanvases() {
-  quickCanvasEntries().forEach(([key, canvas, message]) => {
-    drawVideoToCanvas(canvas, state.hiddenVideos[state.quickVideoIndexes[key]], message);
+  quickVideoEntries().forEach(([key, video, message]) => {
+    if (!video) {
+      return;
+    }
+    const sourceVideo = state.hiddenVideos[state.quickVideoIndexes[key]];
+    video.dataset.emptyMessage = sourceVideo?.currentSrc ? "" : message;
   });
 }
 
@@ -2086,12 +2101,13 @@ async function runWithErrors(fn) {
   }
 }
 
-function animationLoop() {
-  syncVideoTimes(false);
-  drawHeadVideoCanvas();
-  drawQuickVideoCanvases();
-  drawGripperCurves();
-  updateTrajectoryHighlight(false);
+function animationLoop(now = 0) {
+  if (!state.lastPlaybackUiAt || now - state.lastPlaybackUiAt >= 83) {
+    state.lastPlaybackUiAt = now;
+    syncVideoTimes(false);
+    drawGripperCurves();
+    updateTrajectoryHighlight(false);
+  }
   window.requestAnimationFrame(animationLoop);
 }
 

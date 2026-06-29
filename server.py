@@ -11,7 +11,6 @@ import mimetypes
 import os
 import posixpath
 import re
-import shutil
 import sys
 import threading
 import time
@@ -840,6 +839,11 @@ def label_rows_from_store(
 class QCRequestHandler(BaseHTTPRequestHandler):
     server_version = "LQCP/0.2"
 
+    def log_request(self, code: int | str = "-", size: int | str = "-") -> None:
+        if getattr(self, "path", "").startswith("/media"):
+            return
+        super().log_request(code, size)
+
     def log_message(self, format: str, *args: Any) -> None:
         sys.stderr.write("[%s] %s\n" % (datetime.now().strftime("%Y-%m-%d %H:%M:%S"), format % args))
 
@@ -1208,15 +1212,7 @@ class QCRequestHandler(BaseHTTPRequestHandler):
             self.end_headers()
             if self.command == "HEAD":
                 return
-            with file_path.open("rb") as handle:
-                handle.seek(start)
-                remaining = length
-                while remaining > 0:
-                    chunk = handle.read(min(1024 * 1024, remaining))
-                    if not chunk:
-                        break
-                    self.wfile.write(chunk)
-                    remaining -= len(chunk)
+            self.copy_file_bytes(file_path, start, length)
             return
 
         self.send_response(HTTPStatus.OK)
@@ -1227,8 +1223,31 @@ class QCRequestHandler(BaseHTTPRequestHandler):
         self.end_headers()
         if self.command == "HEAD":
             return
+        self.copy_file_bytes(file_path, 0, file_size)
+
+    def copy_file_bytes(self, file_path: Path, start: int, length: int) -> None:
         with file_path.open("rb") as handle:
-            shutil.copyfileobj(handle, self.wfile)
+            sendfile = getattr(os, "sendfile", None)
+            if sendfile:
+                offset = start
+                remaining = length
+                out_fd = self.connection.fileno()
+                in_fd = handle.fileno()
+                while remaining > 0:
+                    sent = sendfile(out_fd, in_fd, offset, min(8 * 1024 * 1024, remaining))
+                    if sent == 0:
+                        break
+                    offset += sent
+                    remaining -= sent
+                return
+            handle.seek(start)
+            remaining = length
+            while remaining > 0:
+                chunk = handle.read(min(1024 * 1024, remaining))
+                if not chunk:
+                    break
+                self.wfile.write(chunk)
+                remaining -= len(chunk)
 
 
 def parse_args() -> argparse.Namespace:
