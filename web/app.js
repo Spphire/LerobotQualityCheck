@@ -84,6 +84,8 @@ const state = {
   trajectoryHighlightTraceIndexes: [],
   lastTrajectoryHighlightFrame: null,
   lastTrajectoryHighlightAt: 0,
+  trajectoryPlotEventsBound: false,
+  isInteractingTrajectory: false,
   framesRequest: 0,
   lastPlaybackUiAt: 0,
 };
@@ -1198,6 +1200,28 @@ function poseAxesTraces(points = [], quaternions = []) {
   ];
 }
 
+function bindTrajectoryInteractionGuards() {
+  if (!el.trajectoryCanvas || state.trajectoryPlotEventsBound) {
+    return;
+  }
+  state.trajectoryPlotEventsBound = true;
+  el.trajectoryCanvas.addEventListener("pointerdown", () => {
+    state.isInteractingTrajectory = true;
+  });
+  window.addEventListener("pointerup", () => {
+    if (!state.isInteractingTrajectory) {
+      return;
+    }
+    window.setTimeout(() => {
+      state.isInteractingTrajectory = false;
+      updateTrajectoryHighlight(true);
+    }, 120);
+  });
+  window.addEventListener("pointercancel", () => {
+    state.isInteractingTrajectory = false;
+  });
+}
+
 function renderTrajectory3D(trajectory) {
   state.trajectory = trajectory;
   drawGripperCurves();
@@ -1232,11 +1256,13 @@ function renderTrajectory3D(trajectory) {
     tickfont: { color: "#8d9aa5", size: 10 },
   };
   const layout = {
+    uirevision: `episode-${state.currentIndex ?? "none"}`,
     margin: { l: 0, r: 0, t: 0, b: 0 },
     paper_bgcolor: "#0b0f14",
     plot_bgcolor: "#0b0f14",
     showlegend: false,
     scene: {
+      uirevision: `episode-${state.currentIndex ?? "none"}`,
       aspectmode: "data",
       xaxis: { ...axisStyle, title: "x" },
       yaxis: { ...axisStyle, title: "y ↑" },
@@ -1250,6 +1276,7 @@ function renderTrajectory3D(trajectory) {
     scrollZoom: true,
     modeBarButtonsToRemove: ["lasso2d", "select2d"],
   };
+  bindTrajectoryInteractionGuards();
   Plotly3D.react(el.trajectoryCanvas, traces, layout, config);
   updateTrajectoryHighlight(true);
   el.trajectoryState.textContent = `${formatNumber(trajectory.total_rows)} frames · stride ${trajectory.stride}`;
@@ -1257,6 +1284,9 @@ function renderTrajectory3D(trajectory) {
 
 function updateTrajectoryHighlight(force = false) {
   if (!Plotly3D || !state.trajectory || !state.trajectoryHighlightTraceIndexes.length || !el.trajectoryCanvas) {
+    return;
+  }
+  if (!force && state.isInteractingTrajectory) {
     return;
   }
   const frame = currentFrameNumber();
@@ -1896,11 +1926,33 @@ function bindEvents() {
   bindCurveHover(el.leftGripperCanvas, "left");
   bindCurveHover(el.rightGripperCanvas, "right");
 
-  el.setUserButton.addEventListener("click", async () => {
+  async function applyUserInput() {
+    const nextUser = el.userInput.value.trim() || "default";
+    if (nextUser === state.user) {
+      return;
+    }
     releaseCurrentPresence();
-    state.user = el.userInput.value.trim() || "default";
+    state.user = nextUser;
     state.page = 1;
     await runWithErrors(() => loadEpisodes({ keepSelection: false }));
+  }
+
+  const debouncedApplyUserInput = debounce(() => {
+    runWithErrors(applyUserInput);
+  }, 360);
+  el.userInput.addEventListener("input", debouncedApplyUserInput);
+  el.userInput.addEventListener("change", () => {
+    runWithErrors(applyUserInput);
+  });
+  el.userInput.addEventListener("keydown", (event) => {
+    if (event.key === "Enter") {
+      event.preventDefault();
+      runWithErrors(applyUserInput);
+      focusEpisodeNavigation();
+    }
+  });
+  el.setUserButton?.addEventListener("click", async () => {
+    await runWithErrors(applyUserInput);
   });
 
   el.loadDatasetButton.addEventListener("click", async () => {
