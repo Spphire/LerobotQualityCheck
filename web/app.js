@@ -177,6 +177,15 @@ function apiUrl(path, params = {}) {
   return `${path}?${paramsWithDataset(params).toString()}`;
 }
 
+function syncBrowserUrl() {
+  const params = paramsWithDataset({
+    page: state.page > 1 ? state.page : "",
+    status: state.status !== "all" ? state.status : "",
+    q: state.q,
+  });
+  window.history.replaceState(null, "", `${window.location.pathname}?${params.toString()}`);
+}
+
 async function requestJson(path, options = {}) {
   const response = await fetch(path, {
     ...options,
@@ -1520,6 +1529,7 @@ async function loadEpisodes({ refresh = false, keepSelection = true, preferLast 
   window.localStorage.setItem("lqcp.user", state.user);
   window.localStorage.setItem("lqcp.page", String(state.page));
   window.localStorage.setItem("lqcp.status", state.status);
+  syncBrowserUrl();
   const data = await fetchCurrentEpisodeListData({ refresh });
   applyEpisodeListData(data);
 
