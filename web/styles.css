@@ -158,6 +158,10 @@ textarea {
   box-shadow: 1px 0 0 rgba(255, 255, 255, 0.72) inset;
 }
 
+body[data-mode="admin-review"] .left-ui {
+  grid-template-rows: auto auto auto auto auto auto minmax(0, 1fr) auto auto;
+}
+
 .brand {
   display: flex;
   align-items: center;
@@ -1031,6 +1035,10 @@ canvas {
     grid-template-rows: auto auto auto auto auto minmax(180px, 260px) auto auto;
     border-right: 0;
     border-bottom: 1px solid var(--line);
+  }
+
+  body[data-mode="admin-review"] .left-ui {
+    grid-template-rows: auto auto auto auto auto auto minmax(180px, 260px) auto auto;
   }
 
   .episode-list {
