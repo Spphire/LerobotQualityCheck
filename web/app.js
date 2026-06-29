@@ -15,16 +15,6 @@ function normalizeStatus(status) {
   return "pending";
 }
 
-function normalizeFilterStatus(status) {
-  if (status === "reject" || status === "pending" || status === "accept") {
-    return status;
-  }
-  if (status === "unlabeled") {
-    return "pending";
-  }
-  return "all";
-}
-
 const ISSUE_OPTIONS = [
   ["task_failure", "任务失败"],
   ["wrong_object", "物体错误"],
@@ -58,8 +48,6 @@ const state = {
   datasetPath: datasetFromUrl || DEFAULT_DATASET,
   page: Number(window.localStorage.getItem("lqcp.page") || 1),
   pageSize: 60,
-  status: normalizeFilterStatus(window.localStorage.getItem("lqcp.status") || "all"),
-  q: "",
   total: 0,
   episodes: [],
   counts: null,
@@ -87,6 +75,7 @@ const state = {
   trajectoryPlotEventsBound: false,
   isInteractingTrajectory: false,
   framesRequest: 0,
+  searchRequest: 0,
   lastPlaybackUiAt: 0,
 };
 
@@ -112,7 +101,6 @@ function initElements() {
     "allMarkedCount",
     "progressBar",
     "searchInput",
-    "statusFilter",
     "episodeList",
     "prevPageButton",
     "nextPageButton",
@@ -180,8 +168,6 @@ function apiUrl(path, params = {}) {
 function syncBrowserUrl() {
   const params = paramsWithDataset({
     page: state.page > 1 ? state.page : "",
-    status: state.status !== "all" ? state.status : "",
-    q: state.q,
   });
   window.history.replaceState(null, "", `${window.location.pathname}?${params.toString()}`);
 }
@@ -1424,7 +1410,7 @@ function selectableEpisodeNear(index = 0) {
   return state.episodes[start] || state.episodes[0] || null;
 }
 
-function currentEpisodeVisibleInFilter() {
+function currentEpisodeVisibleInList() {
   return state.currentIndex !== null
     && state.episodes.some((episode) => episode.episode_index === state.currentIndex);
 }
@@ -1435,8 +1421,6 @@ function currentListKey() {
     state.user,
     state.page,
     state.pageSize,
-    state.status,
-    state.q,
   ].join("\u001f");
 }
 
@@ -1474,7 +1458,7 @@ function applyEpisodeListData(data) {
   state.counts = data.counts;
   state.users = data.users || [];
   state.info = data.info;
-  if (currentEpisodeVisibleInFilter()) {
+  if (currentEpisodeVisibleInList()) {
     updateNavigationAnchor(state.currentIndex);
   }
   renderSummary(data.counts);
@@ -1486,39 +1470,11 @@ async function fetchCurrentEpisodeListData({ refresh = false } = {}) {
   return requestJson(apiUrl("/api/episodes", {
     page: state.page,
     page_size: state.pageSize,
-    status: state.status,
-    q: state.q,
     refresh: refresh ? "1" : "",
   }));
 }
 
-async function refreshFilteredListAfterStatusChange(previousIndex = 0) {
-  let data = await fetchCurrentEpisodeListData();
-  applyEpisodeListData(data);
-
-  if (!state.episodes.length && state.page > 1) {
-    state.page -= 1;
-    data = await fetchCurrentEpisodeListData();
-    applyEpisodeListData(data);
-    previousIndex = state.episodes.length - 1;
-  }
-
-  if (currentEpisodeVisibleInFilter()) {
-    renderEpisodeList();
-    scrollCurrentIntoView();
-    return;
-  }
-
-  const next = selectableEpisodeNear(previousIndex);
-  if (next) {
-    await selectEpisode(next.episode_index);
-    scrollCurrentIntoView();
-  } else {
-    renderCurrent(null);
-  }
-}
-
-async function loadEpisodes({ refresh = false, keepSelection = true, preferLast = false } = {}) {
+async function loadEpisodes({ refresh = false, keepSelection = true, preferLast = false, selectEpisodeIndex = null } = {}) {
   if (!keepSelection) {
     state.currentIndex = null;
     state.current = null;
@@ -1528,10 +1484,22 @@ async function loadEpisodes({ refresh = false, keepSelection = true, preferLast 
   window.localStorage.setItem("lqcp.dataset", state.datasetPath);
   window.localStorage.setItem("lqcp.user", state.user);
   window.localStorage.setItem("lqcp.page", String(state.page));
-  window.localStorage.setItem("lqcp.status", state.status);
   syncBrowserUrl();
   const data = await fetchCurrentEpisodeListData({ refresh });
   applyEpisodeListData(data);
+
+  const targetIndex = selectEpisodeIndex === null ? null : Number(selectEpisodeIndex);
+  if (Number.isInteger(targetIndex)) {
+    if (state.episodes.some((episode) => episode.episode_index === targetIndex)) {
+      await selectEpisode(targetIndex);
+      scrollCurrentIntoView();
+    } else if (state.episodes[0]) {
+      await selectEpisode(state.episodes[0].episode_index);
+    } else {
+      renderCurrent(null);
+    }
+    return;
+  }
 
   if (!keepSelection || state.currentIndex === null) {
     const next = selectableEpisode(preferLast);
@@ -1543,8 +1511,7 @@ async function loadEpisodes({ refresh = false, keepSelection = true, preferLast 
     return;
   }
 
-  const stillVisible = state.episodes.some((episode) => episode.episode_index === state.currentIndex);
-  if (stillVisible) {
+  if (currentEpisodeVisibleInList()) {
     renderEpisodeList();
   } else if (state.episodes[0]) {
     await selectEpisode(state.episodes[0].episode_index);
@@ -1570,15 +1537,6 @@ async function syncSharedState() {
     applyEpisodeListData(data);
 
     if (state.currentIndex !== null) {
-      if (state.status !== "all" && !currentEpisodeVisibleInFilter()) {
-        const next = selectableEpisodeNear(0);
-        if (next) {
-          await selectEpisode(next.episode_index);
-        } else {
-          renderCurrent(null);
-        }
-        return;
-      }
       const current = await requestJson(apiUrl("/api/episode_state", { episode_index: state.currentIndex }));
       if (current.episode_index !== state.currentIndex) {
         return;
@@ -1633,7 +1591,6 @@ async function saveLabel(status = state.selectedStatus) {
   if (state.currentIndex === null) {
     return;
   }
-  const previousIndex = Math.max(0, state.episodes.findIndex((episode) => episode.episode_index === state.currentIndex));
   const finalStatus = STATUS_ORDER.includes(status) ? status : "pending";
   const payload = {
     episode_index: state.currentIndex,
@@ -1660,11 +1617,7 @@ async function saveLabel(status = state.selectedStatus) {
     };
   }
   renderHeader(state.current);
-  if (state.status !== "all") {
-    await refreshFilteredListAfterStatusChange(previousIndex);
-  } else {
-    updateEpisodeInList(state.currentIndex, result.label, result.episode_label_summary, result.summary);
-  }
+  updateEpisodeInList(state.currentIndex, result.label, result.episode_label_summary, result.summary);
   setSaveState("已保存");
 }
 
@@ -1672,7 +1625,6 @@ async function clearLabel() {
   if (state.currentIndex === null) {
     return;
   }
-  const previousIndex = Math.max(0, state.episodes.findIndex((episode) => episode.episode_index === state.currentIndex));
   setSaveState("保存中");
   const result = await requestJson(apiUrl("/api/label"), {
     method: "POST",
@@ -1695,11 +1647,7 @@ async function clearLabel() {
     };
   }
   renderHeader(state.current);
-  if (state.status !== "all") {
-    await refreshFilteredListAfterStatusChange(previousIndex);
-  } else {
-    updateEpisodeInList(state.currentIndex, result.label, result.episode_label_summary, result.summary);
-  }
+  updateEpisodeInList(state.currentIndex, result.label, result.episode_label_summary, result.summary);
   setSaveState("已清除");
 }
 
@@ -1753,7 +1701,6 @@ function scrollCurrentIntoView() {
 }
 
 function focusEpisodeNavigation() {
-  el.statusFilter?.blur();
   el.episodeList?.focus({ preventScroll: true });
 }
 
@@ -1799,6 +1746,32 @@ function debounce(fn, ms) {
     window.clearTimeout(timer);
     timer = window.setTimeout(() => fn(...args), ms);
   };
+}
+
+async function jumpToSearchResult() {
+  const query = el.searchInput.value.trim();
+  const requestId = state.searchRequest + 1;
+  state.searchRequest = requestId;
+  if (!query) {
+    setSaveState("");
+    return;
+  }
+  setSaveState("搜索中");
+  const data = await requestJson(apiUrl("/api/episode_lookup", {
+    q: query,
+    page_size: state.pageSize,
+  }));
+  if (state.searchRequest !== requestId) {
+    return;
+  }
+  if (!data.match) {
+    setSaveState(`未找到 ${query}`, true);
+    return;
+  }
+  releaseCurrentPresence();
+  state.page = data.page || 1;
+  await loadEpisodes({ keepSelection: false, selectEpisodeIndex: data.match.episode_index });
+  setSaveState(`已定位 ${data.match.episode_name || episodeName(data.match.episode_index)}`);
 }
 
 function curveRatioFromEvent(canvas, event) {
@@ -1932,7 +1905,6 @@ function bindCurveHover(canvas, side) {
 function bindEvents() {
   el.datasetInput.value = state.datasetPath;
   el.userInput.value = state.user;
-  el.statusFilter.value = state.status;
   bindCurveHover(el.leftGripperCanvas, "left");
   bindCurveHover(el.rightGripperCanvas, "right");
 
@@ -1976,20 +1948,16 @@ function bindEvents() {
     await runWithErrors(() => loadEpisodes({ refresh: true }));
   });
 
-  el.statusFilter.addEventListener("change", async () => {
-    releaseCurrentPresence();
-    state.status = el.statusFilter.value;
-    state.page = 1;
-    await runWithErrors(() => loadEpisodes({ keepSelection: false }));
-    focusEpisodeNavigation();
+  const debouncedEpisodeSearch = debounce(() => {
+    runWithErrors(jumpToSearchResult);
+  }, 420);
+  el.searchInput.addEventListener("input", debouncedEpisodeSearch);
+  el.searchInput.addEventListener("keydown", (event) => {
+    if (event.key === "Enter") {
+      event.preventDefault();
+      runWithErrors(jumpToSearchResult);
+    }
   });
-
-  el.searchInput.addEventListener("input", debounce(async () => {
-    releaseCurrentPresence();
-    state.q = el.searchInput.value.trim();
-    state.page = 1;
-    await runWithErrors(() => loadEpisodes({ keepSelection: false }));
-  }, 220));
 
   el.episodeList.addEventListener("click", async (event) => {
     const button = event.target.closest(".episode-item");

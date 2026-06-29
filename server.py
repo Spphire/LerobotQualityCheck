@@ -1151,6 +1151,82 @@ def fuzzy_match_text(haystack: str, needle: str) -> bool:
     return True
 
 
+def episode_search_haystack(episode: dict[str, Any]) -> str:
+    return " ".join(
+        [
+            str(episode.get("episode_index", "")),
+            episode.get("episode_name", ""),
+            episode.get("episode_uuid", ""),
+            episode.get("task_description", ""),
+            episode.get("task_annotation", ""),
+            " ".join(episode.get("tasks") or []),
+        ]
+    ).lower()
+
+
+def find_episode_position(dataset: dict[str, Any], search_text: str) -> int | None:
+    query = search_text.strip().lower()
+    if not query:
+        return None
+
+    episodes = dataset["episodes"]
+    for position, episode in enumerate(episodes):
+        if query == str(episode.get("episode_name", "")).lower():
+            return position
+
+    number_match = re.search(r"\d+", query)
+    if number_match:
+        target_index = int(number_match.group(0))
+        for position, episode in enumerate(episodes):
+            if int(episode["episode_index"]) == target_index:
+                return position
+
+    for position, episode in enumerate(episodes):
+        if query == str(episode.get("episode_uuid", "")).lower():
+            return position
+
+    search_tokens = [token for token in re.split(r"\s+", query) if token]
+    for position, episode in enumerate(episodes):
+        haystack = episode_search_haystack(episode)
+        if all(fuzzy_match_text(haystack, token) for token in search_tokens):
+            return position
+    return None
+
+
+def episode_lookup_payload(
+    dataset_path: Path,
+    dataset: dict[str, Any],
+    store: dict[str, Any],
+    user: str,
+    query: dict[str, list[str]],
+) -> dict[str, Any]:
+    search_text = (query_value(query, "q", "") or "").strip()
+    page_size = parse_int(query_value(query, "page_size"), 60, 1, 200)
+    position = find_episode_position(dataset, search_text)
+    if position is None:
+        return {
+            "query": search_text,
+            "match": None,
+            "page": None,
+            "page_size": page_size,
+            "position": None,
+            "total": len(dataset["episodes"]),
+        }
+
+    episode = dataset["episodes"][position]
+    episode_index = int(episode["episode_index"])
+    label = label_for_episode(store, user, episode_index)
+    locks = presence_snapshot(dataset_path, user)
+    return {
+        "query": search_text,
+        "match": compact_episode(dataset_path, episode, label, store, locks.get(episode_index, [])),
+        "page": position // page_size + 1,
+        "page_size": page_size,
+        "position": position + 1,
+        "total": len(dataset["episodes"]),
+    }
+
+
 def filter_episodes(
     dataset_path: Path,
     dataset: dict[str, Any],
@@ -1171,16 +1247,7 @@ def filter_episodes(
         status = review_status(label.get("status"))
         if status_filter != "all" and status != status_filter:
             continue
-        haystack = " ".join(
-            [
-                str(episode_index),
-                episode.get("episode_name", ""),
-                episode.get("episode_uuid", ""),
-                episode.get("task_description", ""),
-                episode.get("task_annotation", ""),
-                " ".join(episode.get("tasks") or []),
-            ]
-        ).lower()
+        haystack = episode_search_haystack(episode)
         if search_tokens and not all(fuzzy_match_text(haystack, token) for token in search_tokens):
             continue
         result.append(compact_episode(dataset_path, episode, label, store, locks.get(episode_index, [])))
@@ -1356,6 +1423,10 @@ class QCRequestHandler(BaseHTTPRequestHandler):
 
         if method == "GET" and parsed.path == "/api/admin":
             self.send_json(admin_payload(dataset_path, dataset, store))
+            return
+
+        if method == "GET" and parsed.path == "/api/episode_lookup":
+            self.send_json(episode_lookup_payload(dataset_path, dataset, store, user, query))
             return
 
         if method == "GET" and parsed.path == "/api/episodes":

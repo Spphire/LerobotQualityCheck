@@ -221,7 +221,7 @@ textarea {
 
 .filter-panel {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 98px;
+  grid-template-columns: minmax(0, 1fr);
   gap: 8px;
   padding: 9px;
   box-shadow: none;
