@@ -726,12 +726,18 @@ function syncVideoTimes(force = false) {
     return;
   }
   const ratio = currentVideoRatio();
+  const now = performance.now();
+  const rate = Math.max(1, Number(el.speedSelect?.value || 1));
+  const driftTolerance = Math.max(0.2, rate * 0.025);
   state.hiddenVideos.forEach((video) => {
     if (!video || video === master || !Number.isFinite(video.duration) || video.duration <= 0) {
       return;
     }
     const target = ratio * video.duration;
-    if (force || Math.abs(video.currentTime - target) > 0.08) {
+    const lastSyncAt = Number(video.dataset.lastAutoSyncAt || 0);
+    const canAutoSync = now - lastSyncAt > 500;
+    if (force || (canAutoSync && Math.abs(video.currentTime - target) > driftTolerance)) {
+      video.dataset.lastAutoSyncAt = String(now);
       video.currentTime = target;
     }
   });
