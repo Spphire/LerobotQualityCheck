@@ -421,6 +421,7 @@ def write_label_db(
     status: str,
     issues: list[str],
     note: str,
+    force: bool = False,
 ) -> dict[str, Any]:
     now = utc_now()
     with connect_label_db(dataset_path) as conn:
@@ -475,13 +476,13 @@ def write_label_db(
                 ),
             )
         else:
-            if existing and existing.get("user") != user and review_status(existing.get("status")) != review_status(status):
+            if existing and existing.get("user") != user and review_status(existing.get("status")) != review_status(status) and not force:
                 conn.rollback()
                 raise AppError(
                     f"Episode {episode_index} already labeled {existing.get('status')} by {existing.get('user')}",
                     409,
                 )
-            if existing and existing.get("user") != user and review_status(existing.get("status")) == review_status(status):
+            if existing and existing.get("user") != user and review_status(existing.get("status")) == review_status(status) and not force:
                 label = existing
             else:
                 episode = dataset["episode_by_index"][episode_index]
@@ -1577,6 +1578,37 @@ class QCRequestHandler(BaseHTTPRequestHandler):
                     "summary": compact_episode(dataset_path, dataset["episode_by_index"][episode_index], label, updated_store, locked_by),
                     "counts": status_counts(dataset, updated_store, user),
                     "users": user_summaries(dataset, updated_store),
+                    "labels_path": str(labels_path(dataset_path)),
+                    "labels_jsonl_path": str(labels_jsonl_path(dataset_path)),
+                    "labels_db_path": str(labels_db_path(dataset_path)),
+                }
+            )
+            return
+
+        if method == "POST" and parsed.path == "/api/admin/label":
+            payload = self.read_body_json()
+            episode_index = int(payload.get("episode_index"))
+            if episode_index not in dataset["episode_by_index"]:
+                raise AppError(f"Episode not found: {episode_index}", 404)
+            status = str(payload.get("status", "pending"))
+            if status not in RECORDED_STATUS_VALUES:
+                raise AppError(f"Invalid status: {status}", 400)
+
+            with LABEL_LOCK:
+                updated_store = write_label_db(dataset_path, dataset, user, episode_index, status, [], "", force=True)
+
+            label = label_for_episode(updated_store, user, episode_index)
+            locked_by = presence_snapshot(dataset_path, user).get(episode_index, [])
+            self.send_json(
+                {
+                    "ok": True,
+                    "user": user,
+                    "label": label,
+                    "episode_label_summary": per_episode_label_summary(updated_store, episode_index),
+                    "summary": compact_episode(dataset_path, dataset["episode_by_index"][episode_index], label, updated_store, locked_by),
+                    "counts": status_counts_from_label_map(dataset, updated_store.get("labels") or {}),
+                    "users": user_summaries(dataset, updated_store),
+                    "admin": admin_payload(dataset_path, dataset, updated_store),
                     "labels_path": str(labels_path(dataset_path)),
                     "labels_jsonl_path": str(labels_jsonl_path(dataset_path)),
                     "labels_db_path": str(labels_db_path(dataset_path)),

@@ -112,6 +112,133 @@ body.admin-page {
   font-size: 15px;
 }
 
+.admin-review-section header {
+  align-items: flex-start;
+}
+
+.admin-review-section header h2 + span {
+  display: block;
+  margin-top: 4px;
+}
+
+.admin-review-controls {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  white-space: nowrap;
+}
+
+.admin-review-controls select {
+  width: 112px;
+}
+
+.admin-review-controls button {
+  padding: 0 10px;
+}
+
+.admin-review-grid {
+  display: grid;
+  grid-template-columns: minmax(360px, 1fr) minmax(320px, 0.48fr);
+  gap: 14px;
+  padding: 14px;
+  min-width: 0;
+}
+
+.admin-episode-list {
+  display: grid;
+  align-content: start;
+  gap: 7px;
+  max-height: 520px;
+  overflow: auto;
+  padding-right: 4px;
+}
+
+.admin-episode-item {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 10px;
+  width: 100%;
+  min-height: 58px;
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  background: #fff;
+  text-align: left;
+}
+
+.admin-episode-item.active {
+  border-color: var(--blue);
+  box-shadow: 0 0 0 2px rgba(37, 99, 235, 0.1);
+}
+
+.admin-episode-name {
+  display: block;
+  font-weight: 700;
+}
+
+.admin-episode-task,
+.admin-episode-meta {
+  display: block;
+  margin-top: 3px;
+  color: var(--muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
+}
+
+.admin-episode-side {
+  display: grid;
+  justify-items: end;
+  gap: 5px;
+}
+
+.admin-lock-note {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.admin-label-panel {
+  min-width: 0;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--panel-2);
+}
+
+.admin-label-panel h3 {
+  margin: 10px 0 6px;
+  font-size: 18px;
+}
+
+.admin-label-panel p {
+  margin: 0;
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.admin-status-actions {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+  margin-top: 16px;
+}
+
+.admin-status-actions button {
+  font-weight: 700;
+}
+
+.admin-status-actions button.active {
+  border-color: var(--blue);
+  box-shadow: 0 0 0 2px rgba(37, 99, 235, 0.13);
+}
+
+.admin-review-message {
+  min-height: 20px;
+  margin-top: 12px !important;
+}
+
 .admin-grid {
   display: grid;
   grid-template-columns: minmax(260px, 0.7fr) minmax(420px, 1.3fr);
@@ -175,7 +302,14 @@ body.admin-page {
   }
 
   .admin-metrics,
+  .admin-review-grid,
   .admin-grid {
     grid-template-columns: 1fr;
+  }
+
+  .admin-review-controls {
+    align-items: stretch;
+    flex-wrap: wrap;
+    width: 100%;
   }
 }

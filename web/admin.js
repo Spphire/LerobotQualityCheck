@@ -3,6 +3,12 @@ const params = new URLSearchParams(window.location.search);
 const state = {
   dataset: params.get("dataset") || window.localStorage.getItem("lqcp.dataset") || DEFAULT_DATASET,
   token: params.get("token") || window.localStorage.getItem("lqcp.token") || "",
+  reviewStatus: params.get("status") || "all",
+  reviewPage: 1,
+  reviewPageSize: 40,
+  reviewTotal: 0,
+  reviewEpisodes: [],
+  selectedEpisode: null,
 };
 
 const el = {};
@@ -20,18 +26,57 @@ const el = {};
   "activeBody",
   "recentCount",
   "recentBody",
+  "reviewStatusFilter",
+  "reviewPrevButton",
+  "reviewNextButton",
+  "reviewPageInfo",
+  "reviewEpisodeList",
+  "reviewSelectedStatus",
+  "reviewSelectedTitle",
+  "reviewSelectedMeta",
+  "reviewRejectButton",
+  "reviewPendingButton",
+  "reviewAcceptButton",
+  "reviewMessage",
 ].forEach((id) => {
   el[id] = document.getElementById(id);
 });
 
-function apiUrl(path) {
+function apiUrl(path, extra = {}) {
   const next = new URLSearchParams();
   next.set("dataset", state.dataset);
   next.set("user", "admin");
   if (state.token) {
     next.set("token", state.token);
   }
+  Object.entries(extra).forEach(([key, value]) => {
+    if (value !== undefined && value !== null && value !== "") {
+      next.set(key, value);
+    }
+  });
   return `${path}?${next.toString()}`;
+}
+
+async function requestJson(path, options = {}) {
+  const response = await fetch(path, {
+    ...options,
+    headers: {
+      "Content-Type": "application/json",
+      ...(state.token ? { "X-LQCP-Token": state.token } : {}),
+      ...(options.headers || {}),
+    },
+  });
+  const text = await response.text();
+  let data = {};
+  try {
+    data = text ? JSON.parse(text) : {};
+  } catch {
+    data = { error: text || response.statusText };
+  }
+  if (!response.ok) {
+    throw new Error(data.error || response.statusText);
+  }
+  return data;
 }
 
 function escapeHtml(value) {
@@ -61,6 +106,14 @@ function formatTime(value) {
 
 function statusText(status) {
   return { accept: "接收", reject: "拒绝", pending: "待审" }[status] || status || "-";
+}
+
+function normalizeStatus(status) {
+  return status === "accept" || status === "reject" ? status : "pending";
+}
+
+function episodeName(index) {
+  return `episode_${String(index).padStart(6, "0")}`;
 }
 
 function emptyRow(colspan, text) {
@@ -114,6 +167,71 @@ function renderActive(active = []) {
   `).join("");
 }
 
+function renderReviewPager() {
+  const pageCount = Math.max(1, Math.ceil(state.reviewTotal / state.reviewPageSize));
+  el.reviewPageInfo.textContent = `${state.reviewPage} / ${pageCount}`;
+  el.reviewPrevButton.disabled = state.reviewPage <= 1;
+  el.reviewNextButton.disabled = state.reviewPage >= pageCount;
+}
+
+function renderReviewList() {
+  if (!state.reviewEpisodes.length) {
+    el.reviewEpisodeList.innerHTML = `<div class="empty-row">暂无匹配 episode</div>`;
+    return;
+  }
+  el.reviewEpisodeList.innerHTML = state.reviewEpisodes.map((episode) => {
+    const status = normalizeStatus(episode.status);
+    const active = state.selectedEpisode?.episode_index === episode.episode_index ? "active" : "";
+    const task = episode.task_description || episode.task_annotation || (episode.tasks || []).join(" / ");
+    const locks = Array.isArray(episode.locked_by) ? episode.locked_by.filter(Boolean) : [];
+    return `
+      <button class="admin-episode-item ${active}" data-index="${episode.episode_index}" type="button">
+        <span>
+          <span class="admin-episode-name">${escapeHtml(episode.episode_name || episodeName(episode.episode_index))}</span>
+          <span class="admin-episode-task">${escapeHtml(task || "-")}</span>
+          <span class="admin-episode-meta">${formatNumber(episode.length)} frames · ${formatNumber(episode.video_count)} videos</span>
+        </span>
+        <span class="admin-episode-side">
+          <span class="status-pill ${status}">${escapeHtml(statusText(status))}</span>
+          ${locks.length ? `<span class="admin-lock-note">锁 ${escapeHtml(locks.join(", "))}</span>` : ""}
+        </span>
+      </button>
+    `;
+  }).join("");
+}
+
+function renderReviewDetail() {
+  const episode = state.selectedEpisode;
+  if (!episode) {
+    el.reviewSelectedStatus.className = "status-pill pending";
+    el.reviewSelectedStatus.textContent = "待审";
+    el.reviewSelectedTitle.textContent = "选择一个 episode";
+    el.reviewSelectedMeta.textContent = "";
+    [el.reviewRejectButton, el.reviewPendingButton, el.reviewAcceptButton].forEach((button) => {
+      button.disabled = true;
+      button.classList.remove("active");
+    });
+    return;
+  }
+  const status = normalizeStatus(episode.status);
+  const task = episode.task_description || episode.task_annotation || (episode.tasks || []).join(" / ");
+  const locks = Array.isArray(episode.locked_by) && episode.locked_by.length
+    ? ` · 当前占用 ${episode.locked_by.join(", ")}`
+    : "";
+  el.reviewSelectedStatus.className = `status-pill ${status}`;
+  el.reviewSelectedStatus.textContent = statusText(status);
+  el.reviewSelectedTitle.textContent = episode.episode_name || episodeName(episode.episode_index);
+  el.reviewSelectedMeta.textContent = `index ${episode.episode_index} · ${formatNumber(episode.length)} frames${locks}${task ? ` · ${task}` : ""}`;
+  [
+    ["reject", el.reviewRejectButton],
+    ["pending", el.reviewPendingButton],
+    ["accept", el.reviewAcceptButton],
+  ].forEach(([buttonStatus, button]) => {
+    button.disabled = false;
+    button.classList.toggle("active", status === buttonStatus);
+  });
+}
+
 function renderRecent(labels = []) {
   el.recentCount.textContent = formatNumber(labels.length);
   if (!labels.length) {
@@ -131,11 +249,7 @@ function renderRecent(labels = []) {
 }
 
 async function loadAdmin() {
-  const response = await fetch(apiUrl("/api/admin"));
-  if (!response.ok) {
-    throw new Error(`加载失败 ${response.status}`);
-  }
-  const data = await response.json();
+  const data = await requestJson(apiUrl("/api/admin"));
   state.dataset = data.dataset_path || state.dataset;
   window.localStorage.setItem("lqcp.dataset", state.dataset);
   el.datasetPath.textContent = `${data.dataset_id} · ${data.dataset_path}`;
@@ -146,20 +260,134 @@ async function loadAdmin() {
   renderRecent(data.recent_labels || []);
 }
 
+function selectReviewEpisode(episodeIndex) {
+  state.selectedEpisode = state.reviewEpisodes.find((episode) => episode.episode_index === episodeIndex) || null;
+  renderReviewList();
+  renderReviewDetail();
+}
+
+async function loadReviewEpisodes({ keepSelection = true } = {}) {
+  const data = await requestJson(apiUrl("/api/episodes", {
+    page: state.reviewPage,
+    page_size: state.reviewPageSize,
+    status: state.reviewStatus !== "all" ? state.reviewStatus : "",
+  }));
+  state.dataset = data.dataset_path || state.dataset;
+  state.reviewTotal = data.total || 0;
+  state.reviewEpisodes = data.episodes || [];
+  const previousIndex = state.selectedEpisode?.episode_index;
+  if (keepSelection && previousIndex !== undefined) {
+    state.selectedEpisode = state.reviewEpisodes.find((episode) => episode.episode_index === previousIndex) || null;
+  }
+  if (!state.selectedEpisode) {
+    state.selectedEpisode = state.reviewEpisodes[0] || null;
+  }
+  renderReviewPager();
+  renderReviewList();
+  renderReviewDetail();
+}
+
+async function refreshAll({ keepSelection = true } = {}) {
+  await loadAdmin();
+  await loadReviewEpisodes({ keepSelection });
+}
+
+async function saveReviewStatus(status) {
+  const episode = state.selectedEpisode;
+  if (!episode) {
+    return;
+  }
+  el.reviewMessage.textContent = "保存中";
+  el.reviewMessage.style.color = "var(--muted)";
+  const result = await requestJson(apiUrl("/api/admin/label"), {
+    method: "POST",
+    body: JSON.stringify({
+      episode_index: episode.episode_index,
+      status,
+    }),
+  });
+  const summary = result.summary || {};
+  state.selectedEpisode = {
+    ...episode,
+    ...summary,
+    status: normalizeStatus(result.label?.status || summary.status || status),
+  };
+  el.reviewMessage.textContent = `已保存 ${state.selectedEpisode.episode_name || episodeName(episode.episode_index)}`;
+  renderReviewDetail();
+  await refreshAll({ keepSelection: true });
+}
+
 function scheduleRefresh() {
   window.setInterval(() => {
-    loadAdmin().catch((error) => {
+    refreshAll({ keepSelection: true }).catch((error) => {
       el.updatedAt.textContent = error.message || String(error);
     });
   }, 10000);
 }
 
 el.refreshButton.addEventListener("click", () => {
-  loadAdmin().catch((error) => {
+  refreshAll({ keepSelection: true }).catch((error) => {
     el.updatedAt.textContent = error.message || String(error);
   });
 });
 
-loadAdmin().then(scheduleRefresh).catch((error) => {
+el.reviewStatusFilter.value = state.reviewStatus;
+el.reviewStatusFilter.addEventListener("change", () => {
+  state.reviewStatus = el.reviewStatusFilter.value;
+  state.reviewPage = 1;
+  el.reviewMessage.textContent = "";
+  refreshAll({ keepSelection: false }).catch((error) => {
+    el.reviewMessage.textContent = error.message || String(error);
+    el.reviewMessage.style.color = "var(--red)";
+  });
+});
+
+el.reviewPrevButton.addEventListener("click", () => {
+  if (state.reviewPage <= 1) {
+    return;
+  }
+  state.reviewPage -= 1;
+  el.reviewMessage.textContent = "";
+  loadReviewEpisodes({ keepSelection: false }).catch((error) => {
+    el.reviewMessage.textContent = error.message || String(error);
+    el.reviewMessage.style.color = "var(--red)";
+  });
+});
+
+el.reviewNextButton.addEventListener("click", () => {
+  const pageCount = Math.max(1, Math.ceil(state.reviewTotal / state.reviewPageSize));
+  if (state.reviewPage >= pageCount) {
+    return;
+  }
+  state.reviewPage += 1;
+  el.reviewMessage.textContent = "";
+  loadReviewEpisodes({ keepSelection: false }).catch((error) => {
+    el.reviewMessage.textContent = error.message || String(error);
+    el.reviewMessage.style.color = "var(--red)";
+  });
+});
+
+el.reviewEpisodeList.addEventListener("click", (event) => {
+  const button = event.target.closest(".admin-episode-item");
+  if (!button) {
+    return;
+  }
+  selectReviewEpisode(Number(button.dataset.index));
+});
+
+[
+  ["reject", el.reviewRejectButton],
+  ["pending", el.reviewPendingButton],
+  ["accept", el.reviewAcceptButton],
+].forEach(([status, button]) => {
+  button.addEventListener("click", () => {
+    saveReviewStatus(status).catch((error) => {
+      el.reviewMessage.textContent = error.message || String(error);
+      el.reviewMessage.style.color = "var(--red)";
+    });
+  });
+});
+
+refreshAll({ keepSelection: false }).then(scheduleRefresh).catch((error) => {
   el.updatedAt.textContent = error.message || String(error);
 });
