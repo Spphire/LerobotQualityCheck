@@ -34,6 +34,25 @@ function apiUrl(path) {
   return `${path}?${next.toString()}`;
 }
 
+function contextUrl(path) {
+  const next = new URLSearchParams();
+  next.set("dataset", state.dataset);
+  next.set("user", "admin");
+  if (state.token) {
+    next.set("token", state.token);
+  }
+  return `${path}?${next.toString()}`;
+}
+
+function syncNavigationLinks() {
+  document.querySelectorAll("[data-context-link]").forEach((link) => {
+    const path = link.getAttribute("data-context-link");
+    if (path) {
+      link.href = contextUrl(path);
+    }
+  });
+}
+
 async function requestJson(path) {
   const response = await fetch(path, {
     headers: state.token ? { "X-LQCP-Token": state.token } : {},
@@ -151,6 +170,7 @@ async function loadAdmin() {
   const data = await requestJson(apiUrl("/api/admin"));
   state.dataset = data.dataset_path || state.dataset;
   window.localStorage.setItem("lqcp.dataset", state.dataset);
+  syncNavigationLinks();
   el.datasetPath.textContent = `${data.dataset_id} · ${data.dataset_path}`;
   el.updatedAt.textContent = `更新 ${formatTime(data.generated_at)}`;
   renderMetrics(data.counts || {});
@@ -173,6 +193,7 @@ el.refreshButton.addEventListener("click", () => {
   });
 });
 
+syncNavigationLinks();
 loadAdmin().then(scheduleRefresh).catch((error) => {
   el.updatedAt.textContent = error.message || String(error);
 });

@@ -4,8 +4,8 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>LeRobot 标注审查</title>
-    <link rel="stylesheet" href="/styles.css" />
-    <link rel="stylesheet" href="/admin.css" />
+    <link rel="stylesheet" href="/styles.css?v=20260630-admin-dataset" />
+    <link rel="stylesheet" href="/admin.css?v=20260630-admin-dataset" />
   </head>
   <body class="admin-page">
     <header class="admin-topbar">
@@ -15,8 +15,8 @@
         <p id="datasetPath" class="admin-subtitle"></p>
       </div>
       <nav class="admin-actions">
-        <a href="/admin/review" class="admin-link primary">可视化标注</a>
-        <a href="/" class="admin-link">质检页面</a>
+        <a href="/admin/review" class="admin-link primary" data-context-link="/admin/review">可视化标注</a>
+        <a href="/" class="admin-link" data-context-link="/">质检页面</a>
         <button id="refreshButton" type="button">刷新</button>
       </nav>
     </header>
@@ -109,6 +109,6 @@
       </section>
     </main>
 
-    <script src="/admin.js"></script>
+    <script src="/admin.js?v=20260630-admin-dataset"></script>
   </body>
 </html>

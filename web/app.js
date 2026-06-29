@@ -47,6 +47,7 @@ if (datasetFromUrl) {
   window.localStorage.setItem("lqcp.dataset", datasetFromUrl);
 }
 const storedUser = window.localStorage.getItem(USER_STORAGE_KEY);
+const storedDataset = window.localStorage.getItem("lqcp.dataset");
 const defaultUser = IS_ADMIN_REVIEW ? "admin" : `user-${Math.random().toString(16).slice(2, 6)}`;
 const initialPage = parseInt(urlParams.get("page") || window.localStorage.getItem(PAGE_STORAGE_KEY) || "1", 10);
 const initialStatus = urlParams.get("status") || "all";
@@ -55,7 +56,7 @@ const state = {
   adminReview: IS_ADMIN_REVIEW,
   token: tokenFromUrl || window.localStorage.getItem("lqcp.token") || "",
   user: userFromUrl || storedUser || defaultUser,
-  datasetPath: datasetFromUrl || DEFAULT_DATASET,
+  datasetPath: datasetFromUrl || storedDataset || DEFAULT_DATASET,
   page: Number.isInteger(initialPage) && initialPage > 0 ? initialPage : 1,
   pageSize: 60,
   status: IS_ADMIN_REVIEW && ["all", "pending", "accept", "reject"].includes(initialStatus) ? initialStatus : "all",
@@ -183,6 +184,20 @@ function syncBrowserUrl() {
     status: state.adminReview && state.status !== "all" ? state.status : "",
   });
   window.history.replaceState(null, "", `${window.location.pathname}?${params.toString()}`);
+  syncNavigationLinks();
+}
+
+function urlWithContext(path, params = {}) {
+  return `${path}?${paramsWithDataset(params).toString()}`;
+}
+
+function syncNavigationLinks() {
+  document.querySelectorAll("[data-context-link]").forEach((link) => {
+    const path = link.getAttribute("data-context-link");
+    if (path) {
+      link.href = urlWithContext(path);
+    }
+  });
 }
 
 async function requestJson(path, options = {}) {
