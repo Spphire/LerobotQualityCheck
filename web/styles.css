@@ -1037,6 +1037,16 @@ canvas {
     max-height: 260px;
   }
 
+  .episode-item {
+    grid-template-columns: 1fr;
+  }
+
+  .status-stack {
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: flex-start;
+  }
+
   .visual-workspace {
     overflow: visible;
   }
