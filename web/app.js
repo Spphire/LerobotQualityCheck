@@ -1121,6 +1121,26 @@ function defaultCameraEyeForUpAxis(axis) {
   return { x: 1.35, y: 0.85, z: 1.35 };
 }
 
+function applyTrajectoryDisplayTransform(root, dataUpAxis) {
+  root.rotation.set(0, 0, 0);
+  if (dataUpAxis === "y") {
+    root.rotation.x = Math.PI / 2;
+  } else if (dataUpAxis === "x") {
+    root.rotation.y = -Math.PI / 2;
+  }
+  root.updateMatrixWorld(true);
+}
+
+function rawVectorToDisplayVector(vector, dataUpAxis) {
+  const transformed = vector.clone();
+  if (dataUpAxis === "y") {
+    transformed.applyAxisAngle(new Three3D.Vector3(1, 0, 0), Math.PI / 2);
+  } else if (dataUpAxis === "x") {
+    transformed.applyAxisAngle(new Three3D.Vector3(0, 1, 0), -Math.PI / 2);
+  }
+  return transformed;
+}
+
 function trajectoryTrace(name, points = [], color, width = 5, opacity = 0.78) {
   const valid = compactPoints(points);
   return {
@@ -1891,20 +1911,23 @@ function createTrajectoryView(trajectory) {
 
   const scene = new Three3D.Scene();
   scene.background = new Three3D.Color(0x0b0f14);
-  addSceneGuides(scene, bounds, upAxis);
+  const trajectoryRoot = new Three3D.Group();
+  applyTrajectoryDisplayTransform(trajectoryRoot, upAxis);
+  scene.add(trajectoryRoot);
+  addSceneGuides(trajectoryRoot, bounds, upAxis);
 
   const radius = Math.max(bounds.span * 0.0025, 0.0018);
   const markerRadius = Math.max(bounds.span * 0.011, 0.0045);
-  addTrajectoryTube(scene, trajectory.left?.points || [], {
+  addTrajectoryTube(trajectoryRoot, trajectory.left?.points || [], {
     glow: 0x22c55e,
     core: 0x4ade80,
   }, radius);
-  addTrajectoryTube(scene, trajectory.right?.points || [], {
+  addTrajectoryTube(trajectoryRoot, trajectory.right?.points || [], {
     glow: 0xf43f5e,
     core: 0xfb7185,
   }, radius);
-  addEndpointMarkers(scene, trajectory.left?.points || [], 0x4ade80, markerRadius * 0.8);
-  addEndpointMarkers(scene, trajectory.right?.points || [], 0xfb7185, markerRadius * 0.8);
+  addEndpointMarkers(trajectoryRoot, trajectory.left?.points || [], 0x4ade80, markerRadius * 0.8);
+  addEndpointMarkers(trajectoryRoot, trajectory.right?.points || [], 0xfb7185, markerRadius * 0.8);
 
   const camera = new Three3D.PerspectiveCamera(
     45,
@@ -1912,19 +1935,20 @@ function createTrajectoryView(trajectory) {
     Math.max(bounds.span / 1000, 0.0005),
     Math.max(bounds.span * 30, 10),
   );
-  setVectorByAxis(camera.up, upAxis);
+  camera.up.set(0, 0, 1);
   const cameraEye = cameraFromHeadMinusZ(trajectory).eye;
-  const eyeVector = new Three3D.Vector3(cameraEye.x, cameraEye.y, cameraEye.z);
+  let eyeVector = rawVectorToDisplayVector(new Three3D.Vector3(cameraEye.x, cameraEye.y, cameraEye.z), upAxis);
   if (eyeVector.lengthSq() < 1e-8) {
     const fallbackEye = defaultCameraEyeForUpAxis(upAxis);
-    eyeVector.set(fallbackEye.x, fallbackEye.y, fallbackEye.z);
+    eyeVector = rawVectorToDisplayVector(new Three3D.Vector3(fallbackEye.x, fallbackEye.y, fallbackEye.z), upAxis);
   }
+  const displayCenter = rawVectorToDisplayVector(bounds.center, upAxis);
   eyeVector.normalize().multiplyScalar(Math.max(bounds.span * 0.9, 0.2));
-  camera.position.copy(bounds.center).add(eyeVector);
-  camera.lookAt(bounds.center);
+  camera.position.copy(displayCenter).add(eyeVector);
+  camera.lookAt(displayCenter);
 
   const controls = new OrbitControls3D(camera, renderer.domElement);
-  controls.target.copy(bounds.center);
+  controls.target.copy(displayCenter);
   controls.enableDamping = true;
   controls.dampingFactor = 0.08;
   controls.screenSpacePanning = false;
@@ -1932,12 +1956,12 @@ function createTrajectoryView(trajectory) {
   controls.maxDistance = Math.max(bounds.span * 12, 1);
   controls.update();
 
-  const left = createDynamicHand(scene, {
+  const left = createDynamicHand(trajectoryRoot, {
     flowGlow: 0x86efac,
     flowCore: 0xbbf7d0,
     marker: 0x22c55e,
   }, radius, markerRadius);
-  const right = createDynamicHand(scene, {
+  const right = createDynamicHand(trajectoryRoot, {
     flowGlow: 0xfda4af,
     flowCore: 0xffd1d8,
     marker: 0xef4444,
@@ -1948,6 +1972,7 @@ function createTrajectoryView(trajectory) {
     renderer,
     camera,
     controls,
+    trajectoryRoot,
     hands: { left, right },
     pulseMaterials: [...left.pulseMaterials, ...right.pulseMaterials],
   };

@@ -1822,11 +1822,7 @@ def trajectory_metadata_for_episode(dataset: dict[str, Any], episode: dict[str, 
     if explicit_axis:
         world_up_axis = explicit_axis
     else:
-        device_key = device_type.lower()
-        if "teleoperation_r1" in device_key or device_key == "r1":
-            world_up_axis = "z"
-        else:
-            world_up_axis = "y"
+        world_up_axis = "y"
 
     return {
         "device_type": device_type,
