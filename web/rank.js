@@ -1,6 +1,9 @@
 const params = new URLSearchParams(window.location.search);
 const state = {
   token: params.get("token") || window.localStorage.getItem("lqcp.token") || "",
+  user: params.get("user") || window.localStorage.getItem("lqcp.user") || "admin",
+  expandedCollector: "",
+  collectorItems: [],
 };
 
 const el = {};
@@ -24,7 +27,7 @@ const el = {};
 
 function apiUrl(path) {
   const next = new URLSearchParams();
-  next.set("user", "admin");
+  next.set("user", state.user);
   if (state.token) {
     next.set("token", state.token);
   }
@@ -33,11 +36,21 @@ function apiUrl(path) {
 
 function contextUrl(path) {
   const next = new URLSearchParams();
-  next.set("user", "admin");
+  next.set("user", state.user);
   if (state.token) {
     next.set("token", state.token);
   }
   return `${path}?${next.toString()}`;
+}
+
+function reviewUrl(episodeIndex) {
+  const next = new URLSearchParams();
+  next.set("episode_index", String(episodeIndex));
+  next.set("user", state.user);
+  if (state.token) {
+    next.set("token", state.token);
+  }
+  return `/?${next.toString()}`;
 }
 
 function syncNavigationLinks() {
@@ -149,21 +162,50 @@ function renderRejectRateRank(items = []) {
 }
 
 function renderCollectorRejectRateRank(items = []) {
+  state.collectorItems = items;
   if (!items.length) {
     el.collectorRejectRateRankBody.innerHTML = emptyRow(7, "暂无采集人数据");
     return;
   }
-  el.collectorRejectRateRankBody.innerHTML = items.map((item, index) => `
+  el.collectorRejectRateRankBody.innerHTML = items.map((item, index) => {
+    const collector = item.collector || "";
+    const expanded = state.expandedCollector === collector;
+    const episodes = item.rejected_episodes || [];
+    const detailRows = expanded
+      ? `
+        <tr class="collector-detail-row">
+          <td colspan="7">
+            <div class="collector-detail">
+              ${episodes.length ? episodes.map((episode) => `
+                <a class="collector-episode-link" href="${reviewUrl(episode.episode_index)}">
+                  <span>${escapeHtml(episode.episode_name || `episode_${String(episode.episode_index).padStart(6, "0")}`)}</span>
+                  <span>index ${formatNumber(episode.episode_index)}</span>
+                  <span>${escapeHtml(episode.user || "-")}</span>
+                  <span>${escapeHtml(formatTime(episode.updated_at))}</span>
+                </a>
+              `).join("") : '<div class="collector-detail-empty">暂无拒绝 episode</div>'}
+            </div>
+          </td>
+        </tr>
+      `
+      : "";
+    return `
     <tr>
       <td>${rankBadge(index)}</td>
-      <td>${escapeHtml(item.collector)}</td>
+      <td>
+        <button class="collector-toggle" type="button" data-index="${index}" aria-expanded="${expanded ? "true" : "false"}">
+          ${escapeHtml(collector)}
+        </button>
+      </td>
       <td><strong>${formatPercent(item.reject_rate)}</strong></td>
       <td class="status-text reject">${formatNumber(item.reject)}</td>
       <td>${formatNumber(item.marked)}</td>
       <td class="status-text accept">${formatNumber(item.accept)}</td>
       <td class="status-text pending">${formatNumber(item.pending)}</td>
     </tr>
-  `).join("");
+    ${detailRows}
+  `;
+  }).join("");
 }
 
 async function loadRank() {
@@ -200,6 +242,17 @@ el.refreshButton.addEventListener("click", () => {
     el.rejectRateUpdatedAt.textContent = error.message || String(error);
     el.collectorUpdatedAt.textContent = error.message || String(error);
   });
+});
+
+el.collectorRejectRateRankBody.addEventListener("click", (event) => {
+  const button = event.target.closest(".collector-toggle");
+  if (!button) {
+    return;
+  }
+  const item = state.collectorItems[Number(button.dataset.index)];
+  const collector = item?.collector || "";
+  state.expandedCollector = state.expandedCollector === collector ? "" : collector;
+  renderCollectorRejectRateRank(state.collectorItems);
 });
 
 syncNavigationLinks();

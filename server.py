@@ -1598,15 +1598,29 @@ def rank_payload(dataset_path: Path, dataset: dict[str, Any], store: dict[str, A
                 "accept": 0,
                 "pending": 0,
                 "known": collector != "未知采集人",
+                "rejected_episodes": [],
             },
         )
         stat["marked"] += 1
         stat[status] += 1
+        if status == "reject" and len(stat["rejected_episodes"]) < 200:
+            stat["rejected_episodes"].append(
+                {
+                    "episode_index": episode_index,
+                    "episode_name": episode.get("episode_name", f"episode_{episode_index:06d}"),
+                    "episode_uuid": episode.get("episode_uuid", ""),
+                    "user": label.get("user") or label.get("annotator") or "",
+                    "updated_at": label.get("updated_at", ""),
+                    "task_description": episode.get("task_description", ""),
+                    "task_annotation": episode.get("task_annotation", ""),
+                }
+            )
     collectors = []
     for stat in collector_stats.values():
         marked = int(stat.get("marked") or 0)
         reject = int(stat.get("reject") or 0)
         stat["reject_rate"] = reject / marked if marked else 0
+        stat["rejected_episodes"].sort(key=lambda item: int(item.get("episode_index") or 0))
         collectors.append(stat)
     collector_reject_rate = sorted(
         collectors,

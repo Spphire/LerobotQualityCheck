@@ -47,6 +47,7 @@ const storedUser = window.localStorage.getItem(USER_STORAGE_KEY);
 const defaultUser = IS_ADMIN_REVIEW ? "admin" : `user-${Math.random().toString(16).slice(2, 6)}`;
 const initialPage = parseInt(urlParams.get("page") || window.localStorage.getItem(PAGE_STORAGE_KEY) || "1", 10);
 const initialStatus = urlParams.get("status") || "all";
+const initialEpisodeIndex = parseInt(urlParams.get("episode_index") || "", 10);
 
 const state = {
   adminReview: IS_ADMIN_REVIEW,
@@ -54,6 +55,7 @@ const state = {
   user: userFromUrl || storedUser || defaultUser,
   datasetPath: datasetFromUrl || DEFAULT_DATASET,
   page: Number.isInteger(initialPage) && initialPage > 0 ? initialPage : 1,
+  initialEpisodeIndex: Number.isInteger(initialEpisodeIndex) && initialEpisodeIndex >= 0 ? initialEpisodeIndex : null,
   pageSize: 60,
   status: IS_ADMIN_REVIEW && ["all", "pending", "accept", "reject"].includes(initialStatus) ? initialStatus : "all",
   total: 0,
@@ -194,6 +196,7 @@ function syncBrowserUrl() {
   const params = paramsWithDataset({
     page: state.page > 1 ? state.page : "",
     status: state.adminReview && state.status !== "all" ? state.status : "",
+    episode_index: state.currentIndex !== null ? state.currentIndex : "",
   });
   window.history.replaceState(null, "", `${window.location.pathname}?${params.toString()}`);
   syncNavigationLinks();
@@ -2171,6 +2174,27 @@ async function loadEpisodes({ refresh = false, keepSelection = true, preferLast 
   }
 }
 
+async function jumpToInitialEpisode() {
+  if (state.initialEpisodeIndex === null) {
+    await loadEpisodes({ keepSelection: false });
+    return;
+  }
+  const targetIndex = state.initialEpisodeIndex;
+  state.initialEpisodeIndex = null;
+  const data = await requestJson(apiUrl("/api/episode_lookup", {
+    q: String(targetIndex),
+    page_size: state.pageSize,
+    status: state.adminReview && state.status !== "all" ? state.status : "",
+  }));
+  if (data.match?.episode_index === targetIndex) {
+    state.page = data.page || state.page;
+    await loadEpisodes({ keepSelection: false, selectEpisodeIndex: targetIndex });
+  } else {
+    state.page = Math.max(1, Math.floor(targetIndex / state.pageSize) + 1);
+    await loadEpisodes({ keepSelection: false, selectEpisodeIndex: targetIndex });
+  }
+}
+
 async function selectEpisode(episodeIndex) {
   setSaveState("");
   updateNavigationAnchor(episodeIndex);
@@ -2859,7 +2883,7 @@ async function main() {
   drawCanvasMessage(el.rightGripperCanvas, "等待轨迹数据");
   await loadTrajectoryRenderer();
   animationLoop();
-  await runWithErrors(() => loadEpisodes({ keepSelection: false }));
+  await runWithErrors(() => jumpToInitialEpisode());
   startSyncLoop();
 }
 

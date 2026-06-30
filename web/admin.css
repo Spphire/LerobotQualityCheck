@@ -162,6 +162,66 @@ body.admin-page {
   font-weight: 700;
 }
 
+.collector-toggle {
+  min-height: 26px;
+  max-width: 180px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--blue);
+  overflow: hidden;
+  text-align: left;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  box-shadow: none;
+}
+
+.collector-toggle:hover {
+  background: transparent;
+  box-shadow: none;
+  text-decoration: underline;
+}
+
+.collector-detail-row td {
+  padding: 0;
+  background: rgba(0, 113, 227, 0.035);
+}
+
+.collector-detail {
+  display: grid;
+  max-height: 300px;
+  overflow: auto;
+  padding: 6px;
+}
+
+.collector-episode-link {
+  display: grid;
+  grid-template-columns: minmax(130px, 1.1fr) 86px minmax(70px, 0.7fr) minmax(150px, 1fr);
+  gap: 10px;
+  min-height: 32px;
+  align-items: center;
+  padding: 6px 8px;
+  border-radius: 6px;
+  color: var(--text);
+  text-decoration: none;
+}
+
+.collector-episode-link:hover {
+  background: rgba(0, 113, 227, 0.08);
+}
+
+.collector-episode-link span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.collector-detail-empty {
+  padding: 12px;
+  color: var(--muted);
+}
+
 .rank-1 {
   border-color: rgba(255, 149, 0, 0.42);
   background: rgba(255, 149, 0, 0.16);
