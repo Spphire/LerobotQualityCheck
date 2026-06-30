@@ -1832,7 +1832,7 @@ function createTrajectoryView(trajectory) {
   if (eyeVector.lengthSq() < 1e-8) {
     eyeVector.set(1.35, 0.85, 1.35);
   }
-  eyeVector.normalize().multiplyScalar(Math.max(bounds.span * 2.1, 0.45));
+  eyeVector.normalize().multiplyScalar(Math.max(bounds.span * 1.45, 0.35));
   camera.position.copy(bounds.center).add(eyeVector);
   camera.lookAt(bounds.center);
 
