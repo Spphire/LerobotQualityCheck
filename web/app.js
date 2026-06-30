@@ -89,6 +89,10 @@ const state = {
   labelEffectRequest: 0,
   reviveOverlayTimer: null,
   reviveAudioContext: null,
+  reviveAssetAudio: null,
+  reviveAssetAudioReady: false,
+  reviveAssetAudioFailed: false,
+  reviveTotemAssetReady: false,
 };
 
 let Three3D = null;
@@ -158,6 +162,7 @@ function initElements() {
     "rejectOverlay",
     "rejectCollectorName",
     "reviveOverlay",
+    "reviveTotemAsset",
     "hiddenVideos",
   ].forEach((id) => {
     el[id] = $(id);
@@ -634,7 +639,63 @@ function audioContextForEffects() {
   return state.reviveAudioContext;
 }
 
+function initReviveAssets() {
+  if (el.reviveTotemAsset) {
+    if (el.reviveTotemAsset.complete && el.reviveTotemAsset.naturalWidth > 0) {
+      state.reviveTotemAssetReady = true;
+      el.reviveOverlay?.classList.add("has-totem-asset");
+    }
+    el.reviveTotemAsset.addEventListener("load", () => {
+      state.reviveTotemAssetReady = true;
+      el.reviveOverlay?.classList.add("has-totem-asset");
+    }, { once: true });
+    el.reviveTotemAsset.addEventListener("error", () => {
+      state.reviveTotemAssetReady = false;
+      el.reviveOverlay?.classList.remove("has-totem-asset");
+    }, { once: true });
+  }
+
+  const audio = new Audio("/dev-assets/minecraft/use_totem.ogg");
+  audio.preload = "auto";
+  audio.volume = 0.82;
+  audio.addEventListener("canplaythrough", () => {
+    state.reviveAssetAudioReady = true;
+  }, { once: true });
+  audio.addEventListener("error", () => {
+    state.reviveAssetAudioFailed = true;
+  }, { once: true });
+  state.reviveAssetAudio = audio;
+}
+
+function playReviveAssetSound() {
+  if (!state.reviveAssetAudio || state.reviveAssetAudioFailed) {
+    return false;
+  }
+  try {
+    state.reviveAssetAudio.pause();
+    state.reviveAssetAudio.currentTime = 0;
+    const played = state.reviveAssetAudio.play();
+    if (played && typeof played.catch === "function") {
+      played.catch(() => {
+        state.reviveAssetAudioFailed = true;
+        playReviveGeneratedSound();
+      });
+    }
+    return true;
+  } catch (error) {
+    state.reviveAssetAudioFailed = true;
+    return false;
+  }
+}
+
 function playReviveSound() {
+  if (playReviveAssetSound()) {
+    return;
+  }
+  playReviveGeneratedSound();
+}
+
+function playReviveGeneratedSound() {
   const context = audioContextForEffects();
   if (!context) {
     return;
@@ -692,6 +753,7 @@ function playReviveSound() {
 
 function primeEffectAudio() {
   audioContextForEffects();
+  state.reviveAssetAudio?.load();
 }
 
 function playReviveOverlay() {
@@ -3014,6 +3076,7 @@ function animationLoop(now = 0) {
 
 async function main() {
   initElements();
+  initReviveAssets();
   renderIssueOptions();
   await loadUserSession();
   bindEvents();
