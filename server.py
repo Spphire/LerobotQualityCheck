@@ -13,6 +13,7 @@ import posixpath
 import re
 import secrets
 import sqlite3
+import subprocess
 import sys
 import threading
 import time
@@ -33,6 +34,11 @@ VIDEO_PROXY_ROOT = PROJECT_ROOT / "video_proxy"
 SETTINGS_PATH = QC_ROOT / "settings.json"
 USER_SESSIONS_DB_PATH = QC_ROOT / "user_sessions.db"
 ALLOWED_DATASET_ROOT = Path("/mnt").resolve()
+RAW_EPISODE_ROOTS = [
+    Path(os.environ.get("LQCP_RAW_NEDF_ROOT", "/mnt/nm_data/data/nedf")),
+    Path(os.environ.get("LQCP_RAW_MIDTRAIN_ROOT", "/mnt/nm_data/data/midtrain")),
+]
+RAW_METADATA_TIMEOUT_SECONDS = float(os.environ.get("LQCP_RAW_METADATA_TIMEOUT", "3"))
 
 STATUS_VALUES = {"reject", "pending", "accept", "unlabeled"}
 STATUS_ALIASES = {"bad": "reject", "review": "pending", "good": "accept"}
@@ -45,8 +51,10 @@ USER_SESSION_COOKIE = "lqcp_client_id"
 
 DATASET_CACHE: dict[str, dict[str, Any]] = {}
 TRAJECTORY_CACHE: dict[tuple[str, int, int, int], dict[str, Any]] = {}
+RAW_METADATA_CACHE: dict[str, dict[str, Any]] = {}
 EPISODE_PRESENCE: dict[str, dict[str, dict[str, float]]] = {}
 DATASET_CACHE_LOCK = threading.Lock()
+RAW_METADATA_LOCK = threading.Lock()
 LABEL_LOCK = threading.Lock()
 PRESENCE_LOCK = threading.Lock()
 SETTINGS_LOCK = threading.Lock()
@@ -914,6 +922,153 @@ def load_dataset(dataset_path: Path, refresh: bool = False) -> dict[str, Any]:
     return dataset
 
 
+def nested_lookup(payload: Any, path: tuple[str, ...]) -> Any:
+    current = payload
+    for key in path:
+        if not isinstance(current, dict):
+            return None
+        current = current.get(key)
+    return current
+
+
+def string_value(value: Any) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, str):
+        return value.strip()
+    if isinstance(value, (int, float, bool)):
+        return str(value)
+    if isinstance(value, list):
+        parts = [string_value(item) for item in value]
+        return ", ".join(part for part in parts if part)
+    if isinstance(value, dict):
+        for key in ("name", "username", "user", "id", "uid"):
+            text = string_value(value.get(key))
+            if text:
+                return text
+    return ""
+
+
+def raw_metadata_candidate_paths(episode_uuid: str) -> list[Path]:
+    uuid = str(episode_uuid or "").strip().lower()
+    if not uuid:
+        return []
+    roots = []
+    seen = set()
+    for root in RAW_EPISODE_ROOTS:
+        root_path = Path(root)
+        key = str(root_path)
+        if key in seen:
+            continue
+        seen.add(key)
+        roots.append(root_path)
+    return [root / uuid / "preprocessed" / "metadata.json" for root in roots]
+
+
+def collector_from_metadata(metadata: dict[str, Any]) -> str:
+    candidates = [
+        ("collector",),
+        ("collector_name",),
+        ("collector_id",),
+        ("collect_user",),
+        ("collection_user",),
+        ("collection_operator",),
+        ("operator",),
+        ("operator_name",),
+        ("operator_id",),
+        ("created_by",),
+        ("creator",),
+        ("creator_name",),
+        ("author",),
+        ("owner",),
+        ("user",),
+        ("username",),
+        ("user_name",),
+        ("采集人",),
+        ("采集员",),
+        ("metadata", "collector"),
+        ("metadata", "operator"),
+        ("metadata", "created_by"),
+        ("metadata", "user"),
+    ]
+    for path in candidates:
+        value = string_value(nested_lookup(metadata, path))
+        if value:
+            return value
+    return ""
+
+
+def read_raw_metadata_with_timeout(metadata_path: Path) -> dict[str, Any] | None:
+    code = r"""
+import json
+import pathlib
+import sys
+
+path = pathlib.Path(sys.argv[1])
+if not path.is_file():
+    raise SystemExit(2)
+with path.open("r", encoding="utf-8-sig") as handle:
+    payload = json.load(handle)
+if not isinstance(payload, dict):
+    payload = {}
+print(json.dumps(payload, ensure_ascii=False))
+"""
+    try:
+        proc = subprocess.run(
+            [sys.executable, "-c", code, str(metadata_path)],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=RAW_METADATA_TIMEOUT_SECONDS,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if proc.returncode != 0:
+        return None
+    try:
+        payload = json.loads(proc.stdout or "{}")
+    except json.JSONDecodeError:
+        return None
+    return payload if isinstance(payload, dict) else {}
+
+
+def raw_episode_metadata(episode_uuid: str) -> dict[str, Any]:
+    uuid = str(episode_uuid or "").strip().lower()
+    if not uuid:
+        return {}
+    with RAW_METADATA_LOCK:
+        cached = RAW_METADATA_CACHE.get(uuid)
+        if cached is not None:
+            return dict(cached)
+
+    result: dict[str, Any] = {
+        "episode_uuid": uuid,
+        "collector": "",
+        "raw_path": "",
+        "metadata_path": "",
+        "found": False,
+    }
+    for metadata_path in raw_metadata_candidate_paths(uuid):
+        metadata = read_raw_metadata_with_timeout(metadata_path)
+        if metadata is None:
+            continue
+        result = {
+            "episode_uuid": uuid,
+            "collector": collector_from_metadata(metadata),
+            "raw_path": str(metadata_path.parents[1]),
+            "metadata_path": str(metadata_path),
+            "found": True,
+        }
+        break
+
+    with RAW_METADATA_LOCK:
+        RAW_METADATA_CACHE[uuid] = dict(result)
+    return result
+
+
 def status_counts(dataset: dict[str, Any], store: dict[str, Any], user: str) -> dict[str, int]:
     counts = {"total": len(dataset["episodes"]), "reject": 0, "pending": 0, "accept": 0}
     global_marked_indices = set()
@@ -1132,12 +1287,14 @@ def full_episode(
         videos.append(item)
     label = label_for_episode(store, user, episode_index)
     locked_by = presence_snapshot(dataset_path, user).get(episode_index, [])
+    source_metadata = raw_episode_metadata(episode.get("episode_uuid", ""))
     return {
         "episode": episode,
         "summary": compact_episode(dataset_path, episode, label, store, locked_by),
         "videos": videos,
         "label": label,
         "active_users": locked_by,
+        "source_metadata": source_metadata,
         "user": user,
     }
 
