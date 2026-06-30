@@ -367,7 +367,6 @@ function renderEpisodeList() {
     const status = statusClass(episode.status);
     const task = episode.task_description || episode.task_annotation || (episode.tasks || []).join(" / ");
     const sub = `${formatNumber(episode.length)} frames · ${episode.video_count || 0} videos`;
-    const labelCount = episode.label_count ? `${episode.label_count} 人` : "";
     const lockedBy = Array.isArray(episode.locked_by) ? episode.locked_by.filter(Boolean) : [];
     const lockText = lockedBy.length ? (lockedBy.length === 1 ? `锁 ${lockedBy[0]}` : `锁 ${lockedBy.length}`) : "";
     const lockTitle = lockedBy.length ? `正在查看: ${lockedBy.join(", ")}` : "";
@@ -389,7 +388,6 @@ function renderEpisodeList() {
           <span class="status-pill ${status}">${escapeHtml(statusLabel(status))}</span>
           ${effectiveText ? `<span class="effective-label ${effectiveStatus}" title="${escapeHtml(effectiveTitle)}">${escapeHtml(effectiveText)}</span>` : ""}
           ${lockText ? `<span class="lock-pill" title="${escapeHtml(lockTitle)}">${escapeHtml(lockText)}</span>` : ""}
-          <span class="label-count">${escapeHtml(labelCount)}</span>
         </span>
       </button>
     `;

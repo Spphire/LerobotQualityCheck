@@ -394,11 +394,6 @@ body[data-mode="admin-review"] .left-ui {
   gap: 6px;
 }
 
-.label-count {
-  color: var(--muted);
-  font-size: 12px;
-}
-
 .lock-pill {
   display: inline-flex;
   align-items: center;
