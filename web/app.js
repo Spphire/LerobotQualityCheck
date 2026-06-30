@@ -42,12 +42,8 @@ const userFromUrl = urlParams.get("user");
 if (userFromUrl) {
   window.localStorage.setItem(USER_STORAGE_KEY, userFromUrl);
 }
-const datasetFromUrl = urlParams.get("dataset");
-if (datasetFromUrl) {
-  window.localStorage.setItem("lqcp.dataset", datasetFromUrl);
-}
+const datasetFromUrl = IS_ADMIN_REVIEW ? urlParams.get("dataset") : "";
 const storedUser = window.localStorage.getItem(USER_STORAGE_KEY);
-const storedDataset = window.localStorage.getItem("lqcp.dataset");
 const defaultUser = IS_ADMIN_REVIEW ? "admin" : `user-${Math.random().toString(16).slice(2, 6)}`;
 const initialPage = parseInt(urlParams.get("page") || window.localStorage.getItem(PAGE_STORAGE_KEY) || "1", 10);
 const initialStatus = urlParams.get("status") || "all";
@@ -56,7 +52,7 @@ const state = {
   adminReview: IS_ADMIN_REVIEW,
   token: tokenFromUrl || window.localStorage.getItem("lqcp.token") || "",
   user: userFromUrl || storedUser || defaultUser,
-  datasetPath: datasetFromUrl || storedDataset || DEFAULT_DATASET,
+  datasetPath: datasetFromUrl || DEFAULT_DATASET,
   page: Number.isInteger(initialPage) && initialPage > 0 ? initialPage : 1,
   pageSize: 60,
   status: IS_ADMIN_REVIEW && ["all", "pending", "accept", "reject"].includes(initialStatus) ? initialStatus : "all",
@@ -161,7 +157,6 @@ function initElements() {
 
 function paramsWithDataset(params = {}) {
   const next = new URLSearchParams();
-  next.set("dataset", state.datasetPath);
   next.set("user", state.user);
   if (state.token) {
     next.set("token", state.token);
@@ -176,6 +171,20 @@ function paramsWithDataset(params = {}) {
 
 function apiUrl(path, params = {}) {
   return `${path}?${paramsWithDataset(params).toString()}`;
+}
+
+function applyDatasetPath(datasetPath) {
+  const nextDatasetPath = String(datasetPath || "").trim();
+  if (!nextDatasetPath) {
+    return;
+  }
+  state.datasetPath = nextDatasetPath;
+  if (el.datasetSubtitle) {
+    el.datasetSubtitle.textContent = state.datasetPath;
+  }
+  if (el.datasetInput && el.datasetInput.value !== state.datasetPath) {
+    el.datasetInput.value = state.datasetPath;
+  }
 }
 
 function syncBrowserUrl() {
@@ -1485,6 +1494,7 @@ function navigationAnchorIndex() {
 }
 
 function applyEpisodeListData(data) {
+  applyDatasetPath(data.dataset_path);
   state.total = data.total;
   state.episodes = data.episodes || [];
   state.counts = data.counts;
@@ -1513,8 +1523,7 @@ async function loadEpisodes({ refresh = false, keepSelection = true, preferLast 
     state.current = null;
     resetNavigationAnchor();
   }
-  el.datasetSubtitle.textContent = state.datasetPath;
-  window.localStorage.setItem("lqcp.dataset", state.datasetPath);
+  applyDatasetPath(state.datasetPath);
   window.localStorage.setItem(USER_STORAGE_KEY, state.user);
   window.localStorage.setItem(PAGE_STORAGE_KEY, String(state.page));
   syncBrowserUrl();
@@ -1957,7 +1966,9 @@ function bindCurveHover(canvas, side) {
 }
 
 function bindEvents() {
-  el.datasetInput.value = state.datasetPath;
+  if (el.datasetInput) {
+    el.datasetInput.value = state.datasetPath;
+  }
   el.userInput.value = state.user;
   if (el.statusFilter) {
     el.statusFilter.value = state.status;
@@ -1994,14 +2005,23 @@ function bindEvents() {
     await runWithErrors(applyUserInput);
   });
 
-  el.loadDatasetButton.addEventListener("click", async () => {
+  el.loadDatasetButton?.addEventListener("click", () => runWithErrors(async () => {
+    const nextDatasetPath = el.datasetInput?.value.trim();
+    if (!nextDatasetPath) {
+      setSaveState("数据集路径不能为空", true);
+      return;
+    }
     releaseCurrentPresence();
-    state.datasetPath = el.datasetInput.value.trim() || DEFAULT_DATASET;
+    const settings = await requestJson(apiUrl("/api/settings"), {
+      method: "POST",
+      body: JSON.stringify({ dataset_path: nextDatasetPath }),
+    });
+    applyDatasetPath(settings.dataset_path);
     state.page = 1;
-    await runWithErrors(() => loadEpisodes({ refresh: true, keepSelection: false }));
-  });
+    await loadEpisodes({ refresh: true, keepSelection: false });
+  }));
 
-  el.refreshButton.addEventListener("click", async () => {
+  el.refreshButton?.addEventListener("click", async () => {
     await runWithErrors(() => loadEpisodes({ refresh: true }));
   });
 
@@ -2047,8 +2067,8 @@ function bindEvents() {
     }
   });
 
-  el.exportJsonlButton.addEventListener("click", () => downloadExport("jsonl"));
-  el.exportCsvButton.addEventListener("click", () => downloadExport("csv"));
+  el.exportJsonlButton?.addEventListener("click", () => downloadExport("jsonl"));
+  el.exportCsvButton?.addEventListener("click", () => downloadExport("csv"));
 
   el.playAllButton.addEventListener("click", playAll);
   el.pauseAllButton.addEventListener("click", pauseAll);

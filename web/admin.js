@@ -1,7 +1,5 @@
-const DEFAULT_DATASET = "/mnt/nm_dataset/dataset/giftbox_0628_1912episodes";
 const params = new URLSearchParams(window.location.search);
 const state = {
-  dataset: params.get("dataset") || window.localStorage.getItem("lqcp.dataset") || DEFAULT_DATASET,
   token: params.get("token") || window.localStorage.getItem("lqcp.token") || "",
 };
 
@@ -26,7 +24,6 @@ const el = {};
 
 function apiUrl(path) {
   const next = new URLSearchParams();
-  next.set("dataset", state.dataset);
   next.set("user", "admin");
   if (state.token) {
     next.set("token", state.token);
@@ -36,7 +33,6 @@ function apiUrl(path) {
 
 function contextUrl(path) {
   const next = new URLSearchParams();
-  next.set("dataset", state.dataset);
   next.set("user", "admin");
   if (state.token) {
     next.set("token", state.token);
@@ -168,8 +164,6 @@ function renderRecent(labels = []) {
 
 async function loadAdmin() {
   const data = await requestJson(apiUrl("/api/admin"));
-  state.dataset = data.dataset_path || state.dataset;
-  window.localStorage.setItem("lqcp.dataset", state.dataset);
   syncNavigationLinks();
   el.datasetPath.textContent = `${data.dataset_id} · ${data.dataset_path}`;
   el.updatedAt.textContent = `更新 ${formatTime(data.generated_at)}`;

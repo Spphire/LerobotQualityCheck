@@ -28,6 +28,7 @@ PROJECT_ROOT = Path(__file__).resolve().parent
 STATIC_ROOT = PROJECT_ROOT / "web"
 QC_ROOT = PROJECT_ROOT / "qc_results"
 VIDEO_PROXY_ROOT = PROJECT_ROOT / "video_proxy"
+SETTINGS_PATH = QC_ROOT / "settings.json"
 ALLOWED_DATASET_ROOT = Path("/mnt").resolve()
 
 STATUS_VALUES = {"reject", "pending", "accept", "unlabeled"}
@@ -43,6 +44,7 @@ EPISODE_PRESENCE: dict[str, dict[str, dict[str, float]]] = {}
 DATASET_CACHE_LOCK = threading.Lock()
 LABEL_LOCK = threading.Lock()
 PRESENCE_LOCK = threading.Lock()
+SETTINGS_LOCK = threading.Lock()
 SERVER_CONFIG: dict[str, Any] = {}
 
 
@@ -113,8 +115,21 @@ def write_text_atomic(path: Path, text: str) -> None:
     os.replace(tmp_path, path)
 
 
+def load_server_settings() -> dict[str, Any]:
+    payload = read_json(SETTINGS_PATH, fallback={})
+    return payload if isinstance(payload, dict) else {}
+
+
+def current_dataset_raw_path() -> str:
+    settings = load_server_settings()
+    dataset_path = str(settings.get("dataset_path") or "").strip()
+    if dataset_path:
+        return dataset_path
+    return str(SERVER_CONFIG.get("default_dataset") or DEFAULT_DATASET)
+
+
 def safe_dataset_path(raw_path: str | None) -> Path:
-    raw_path = raw_path or SERVER_CONFIG.get("default_dataset") or DEFAULT_DATASET
+    raw_path = raw_path or current_dataset_raw_path()
     dataset_path = Path(raw_path).expanduser().resolve()
     allowed = str(ALLOWED_DATASET_ROOT)
     if str(dataset_path) != allowed and not str(dataset_path).startswith(allowed + os.sep):
@@ -125,6 +140,53 @@ def safe_dataset_path(raw_path: str | None) -> Path:
     if not episodes_path.exists():
         raise AppError(f"Dataset is missing meta/episodes.jsonl: {dataset_path}", 400)
     return dataset_path
+
+
+def current_dataset_payload(dataset_path: Path, dataset: dict[str, Any] | None = None) -> dict[str, Any]:
+    settings = load_server_settings()
+    info = (dataset or {}).get("info") or {}
+    episodes = (dataset or {}).get("episodes") or []
+    return {
+        "dataset_path": str(dataset_path),
+        "dataset_id": dataset_id(dataset_path),
+        "default_dataset": SERVER_CONFIG.get("default_dataset") or DEFAULT_DATASET,
+        "settings_path": str(SETTINGS_PATH),
+        "updated_at": settings.get("updated_at"),
+        "updated_by": settings.get("updated_by"),
+        "total_episodes": info.get("total_episodes", len(episodes) if episodes else None),
+        "total_frames": info.get("total_frames"),
+        "fps": info.get("fps"),
+    }
+
+
+def require_ready_dataset(dataset_path: Path) -> None:
+    required = [
+        dataset_path / "meta" / "info.json",
+        dataset_path / "meta" / "episodes.jsonl",
+        dataset_path / "meta" / "tasks.jsonl",
+        dataset_path / "data",
+        dataset_path / "videos",
+    ]
+    missing = [str(path.relative_to(dataset_path)) for path in required if not path.exists()]
+    if missing:
+        raise AppError(f"Dataset is not ready; missing: {', '.join(missing)}", 400)
+
+
+def save_current_dataset(raw_path: str | None, user: str) -> dict[str, Any]:
+    raw_path = str(raw_path or "").strip()
+    if not raw_path:
+        raise AppError("dataset_path is required", 400)
+    dataset_path = safe_dataset_path(raw_path)
+    require_ready_dataset(dataset_path)
+    dataset = load_dataset(dataset_path, refresh=True)
+    payload = {
+        **current_dataset_payload(dataset_path, dataset),
+        "updated_at": utc_now(),
+        "updated_by": user,
+    }
+    with SETTINGS_LOCK:
+        write_json_atomic(SETTINGS_PATH, payload)
+    return payload
 
 
 def dataset_id(dataset_path: Path) -> str:
@@ -1423,8 +1485,22 @@ class QCRequestHandler(BaseHTTPRequestHandler):
 
     def handle_api(self, method: str, parsed: Any) -> None:
         query = parse_qs(parsed.query)
-        dataset_path = safe_dataset_path(query_value(query, "dataset") or query_value(query, "dataset_path"))
         user = normalize_user(query_value(query, "user"))
+
+        if parsed.path == "/api/settings":
+            if method == "GET":
+                dataset_path = safe_dataset_path(None)
+                dataset = load_dataset(dataset_path)
+                self.send_json(current_dataset_payload(dataset_path, dataset))
+                return
+            if method == "POST":
+                payload = self.read_body_json()
+                settings = save_current_dataset(payload.get("dataset_path"), user)
+                self.send_json({"ok": True, **settings})
+                return
+            raise AppError("Method not allowed", 405)
+
+        dataset_path = safe_dataset_path(query_value(query, "dataset") or query_value(query, "dataset_path"))
         refresh = query_value(query, "refresh") == "1"
         dataset = load_dataset(dataset_path, refresh=refresh)
         store = load_label_store(dataset_path)
@@ -1803,7 +1879,7 @@ def main() -> None:
     )
 
     try:
-        dataset_path = safe_dataset_path(args.dataset)
+        dataset_path = safe_dataset_path(None)
         dataset = load_dataset(dataset_path, refresh=True)
         print(
             f"Loaded {len(dataset['episodes'])} episodes and "
