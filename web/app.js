@@ -1091,60 +1091,6 @@ function trajectoryAxisRanges(trajectory) {
   return { x: ranges[0], y: ranges[1], z: ranges[2] };
 }
 
-function trajectoryWorldUpAxis(trajectory) {
-  const rawAxis = String(trajectory?.world_up_axis || trajectory?.metadata?.world_up_axis || "y").toLowerCase();
-  return ["x", "y", "z"].includes(rawAxis) ? rawAxis : "y";
-}
-
-function axisVectorObject(axis) {
-  if (axis === "x") {
-    return { x: 1, y: 0, z: 0 };
-  }
-  if (axis === "z") {
-    return { x: 0, y: 0, z: 1 };
-  }
-  return { x: 0, y: 1, z: 0 };
-}
-
-function setVectorByAxis(vector, axis) {
-  const up = axisVectorObject(axis);
-  vector.set(up.x, up.y, up.z);
-}
-
-function defaultCameraEyeForUpAxis(axis) {
-  if (axis === "x") {
-    return { x: 0.85, y: 1.35, z: 1.35 };
-  }
-  if (axis === "z") {
-    return { x: 1.35, y: 1.35, z: 0.85 };
-  }
-  return { x: 1.35, y: 0.85, z: 1.35 };
-}
-
-function applyTrajectoryDisplayTransform(root, dataUpAxis) {
-  root.rotation.set(0, 0, 0);
-  if (dataUpAxis === "y") {
-    root.rotation.x = Math.PI / 2;
-  } else if (dataUpAxis === "x") {
-    root.rotation.y = -Math.PI / 2;
-  }
-  root.updateMatrixWorld(true);
-}
-
-function rawVectorToDisplayVector(vector, dataUpAxis) {
-  const transformed = vector.clone();
-  if (dataUpAxis === "y") {
-    transformed.applyAxisAngle(new Three3D.Vector3(1, 0, 0), Math.PI / 2);
-  } else if (dataUpAxis === "x") {
-    transformed.applyAxisAngle(new Three3D.Vector3(0, 1, 0), -Math.PI / 2);
-  }
-  return transformed;
-}
-
-function defaultDisplayCameraEye() {
-  return new Three3D.Vector3(1.15, -1.25, 0.82);
-}
-
 function trajectoryTrace(name, points = [], color, width = 5, opacity = 0.78) {
   const valid = compactPoints(points);
   return {
@@ -1312,13 +1258,12 @@ function normalizeVector(vector) {
 function cameraFromHeadMinusZ(trajectory) {
   const points = trajectory.ego?.points || [];
   const quaternions = trajectory.ego?.quaternions || [];
-  const upAxis = trajectoryWorldUpAxis(trajectory);
   const firstPose = points
     .map((point, index) => ({ point, quat: quaternions[index] }))
     .find((item) => validPoint(item.point) && validQuat(item.quat));
   const fallback = {
-    up: axisVectorObject(upAxis),
-    eye: defaultCameraEyeForUpAxis(upAxis),
+    up: { x: 0, y: 1, z: 0 },
+    eye: { x: 1.35, y: 0.85, z: 1.35 },
   };
   if (!firstPose) {
     return fallback;
@@ -1329,7 +1274,7 @@ function cameraFromHeadMinusZ(trajectory) {
   }
   const distance = 1.75;
   return {
-    up: axisVectorObject(upAxis),
+    up: { x: 0, y: 1, z: 0 },
     eye: {
       x: -headMinusZ[0] * distance,
       y: -headMinusZ[1] * distance,
@@ -1777,18 +1722,10 @@ function addEndpointMarkers(scene, points = [], color, radius) {
   scene.add(end);
 }
 
-function addSceneGuides(scene, bounds, upAxis = "y") {
+function addSceneGuides(scene, bounds) {
   const gridSize = Math.max(bounds.span * 1.08, 0.12);
   const grid = new Three3D.GridHelper(gridSize, 10, 0x334155, 0x1f2937);
-  if (upAxis === "x") {
-    grid.rotation.z = -Math.PI / 2;
-    grid.position.set(bounds.ranges.x[0], bounds.center.y, bounds.center.z);
-  } else if (upAxis === "z") {
-    grid.rotation.x = Math.PI / 2;
-    grid.position.set(bounds.center.x, bounds.center.y, bounds.ranges.z[0]);
-  } else {
-    grid.position.set(bounds.center.x, bounds.ranges.y[0], bounds.center.z);
-  }
+  grid.position.set(bounds.center.x, bounds.ranges.y[0], bounds.center.z);
   (Array.isArray(grid.material) ? grid.material : [grid.material]).forEach((material) => {
     material.transparent = true;
     material.opacity = 0.28;
@@ -1897,7 +1834,6 @@ function createTrajectoryView(trajectory) {
   }
 
   const bounds = trajectoryBounds(trajectory);
-  const upAxis = trajectoryWorldUpAxis(trajectory);
   const { width, height } = trajectoryContainerSize();
   const renderer = new Three3D.WebGLRenderer({
     antialias: true,
@@ -1915,23 +1851,20 @@ function createTrajectoryView(trajectory) {
 
   const scene = new Three3D.Scene();
   scene.background = new Three3D.Color(0x0b0f14);
-  const trajectoryRoot = new Three3D.Group();
-  applyTrajectoryDisplayTransform(trajectoryRoot, upAxis);
-  scene.add(trajectoryRoot);
-  addSceneGuides(trajectoryRoot, bounds, upAxis);
+  addSceneGuides(scene, bounds);
 
   const radius = Math.max(bounds.span * 0.0025, 0.0018);
   const markerRadius = Math.max(bounds.span * 0.011, 0.0045);
-  addTrajectoryTube(trajectoryRoot, trajectory.left?.points || [], {
+  addTrajectoryTube(scene, trajectory.left?.points || [], {
     glow: 0x22c55e,
     core: 0x4ade80,
   }, radius);
-  addTrajectoryTube(trajectoryRoot, trajectory.right?.points || [], {
+  addTrajectoryTube(scene, trajectory.right?.points || [], {
     glow: 0xf43f5e,
     core: 0xfb7185,
   }, radius);
-  addEndpointMarkers(trajectoryRoot, trajectory.left?.points || [], 0x4ade80, markerRadius * 0.8);
-  addEndpointMarkers(trajectoryRoot, trajectory.right?.points || [], 0xfb7185, markerRadius * 0.8);
+  addEndpointMarkers(scene, trajectory.left?.points || [], 0x4ade80, markerRadius * 0.8);
+  addEndpointMarkers(scene, trajectory.right?.points || [], 0xfb7185, markerRadius * 0.8);
 
   const camera = new Three3D.PerspectiveCamera(
     45,
@@ -1939,18 +1872,18 @@ function createTrajectoryView(trajectory) {
     Math.max(bounds.span / 1000, 0.0005),
     Math.max(bounds.span * 30, 10),
   );
-  camera.up.set(0, 0, 1);
-  const displayCenter = rawVectorToDisplayVector(bounds.center, upAxis);
-  const eyeVector = defaultDisplayCameraEye();
+  camera.up.set(0, 1, 0);
+  const cameraEye = cameraFromHeadMinusZ(trajectory).eye;
+  const eyeVector = new Three3D.Vector3(cameraEye.x, cameraEye.y, cameraEye.z);
   if (eyeVector.lengthSq() < 1e-8) {
-    eyeVector.copy(new Three3D.Vector3(1, -1, 0.7));
+    eyeVector.set(1.35, 0.85, 1.35);
   }
   eyeVector.normalize().multiplyScalar(Math.max(bounds.span * 0.9, 0.2));
-  camera.position.copy(displayCenter).add(eyeVector);
-  camera.lookAt(displayCenter);
+  camera.position.copy(bounds.center).add(eyeVector);
+  camera.lookAt(bounds.center);
 
   const controls = new OrbitControls3D(camera, renderer.domElement);
-  controls.target.copy(displayCenter);
+  controls.target.copy(bounds.center);
   controls.enableDamping = true;
   controls.dampingFactor = 0.08;
   controls.screenSpacePanning = false;
@@ -1958,12 +1891,12 @@ function createTrajectoryView(trajectory) {
   controls.maxDistance = Math.max(bounds.span * 12, 1);
   controls.update();
 
-  const left = createDynamicHand(trajectoryRoot, {
+  const left = createDynamicHand(scene, {
     flowGlow: 0x86efac,
     flowCore: 0xbbf7d0,
     marker: 0x22c55e,
   }, radius, markerRadius);
-  const right = createDynamicHand(trajectoryRoot, {
+  const right = createDynamicHand(scene, {
     flowGlow: 0xfda4af,
     flowCore: 0xffd1d8,
     marker: 0xef4444,
@@ -1974,7 +1907,6 @@ function createTrajectoryView(trajectory) {
     renderer,
     camera,
     controls,
-    trajectoryRoot,
     hands: { left, right },
     pulseMaterials: [...left.pulseMaterials, ...right.pulseMaterials],
   };

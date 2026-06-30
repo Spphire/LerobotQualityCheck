@@ -1793,41 +1793,15 @@ def quat_from_pose(value: Any) -> list[float | None]:
     return [None, None, None, None]
 
 
-def normalize_world_up_axis(value: Any) -> str | None:
-    text = string_value(value).strip().lower()
-    if not text:
-        return None
-    if text in {"x", "+x", "x_up", "x-up", "xup"}:
-        return "x"
-    if text in {"y", "+y", "y_up", "y-up", "yup"}:
-        return "y"
-    if text in {"z", "+z", "z_up", "z-up", "zup"}:
-        return "z"
-    return None
-
-
 def trajectory_metadata_for_episode(dataset: dict[str, Any], episode: dict[str, Any]) -> dict[str, Any]:
     info = dataset.get("info") or {}
     device_type = string_value(episode.get("device_type") or info.get("device_type"))
     collection_mode = string_value(episode.get("collection_mode") or info.get("collection_mode"))
 
-    explicit_axis = (
-        normalize_world_up_axis(episode.get("world_up_axis"))
-        or normalize_world_up_axis(episode.get("up_axis"))
-        or normalize_world_up_axis(episode.get("gravity_axis"))
-        or normalize_world_up_axis(info.get("world_up_axis"))
-        or normalize_world_up_axis(info.get("up_axis"))
-        or normalize_world_up_axis(info.get("gravity_axis"))
-    )
-    if explicit_axis:
-        world_up_axis = explicit_axis
-    else:
-        world_up_axis = "y"
-
     return {
         "device_type": device_type,
         "collection_mode": collection_mode,
-        "world_up_axis": world_up_axis,
+        "world_up_axis": "y",
     }
 
 
