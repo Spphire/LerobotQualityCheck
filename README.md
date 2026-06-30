@@ -82,6 +82,59 @@ http://<server-ip>:18080/?dataset=/mnt/path/to/dataset
 http://<server-ip>:18080/?token=replace-with-a-secret
 ```
 
+## 原始数据路径配置
+
+平台会根据 episode UUID 到原始数据目录中读取：
+
+```text
+<raw_root>/<episode_uuid>/preprocessed/metadata.json
+```
+
+这个元数据用于解析采集人 `collector`，支持拒绝动画、`/rank` 采集人拒绝率排行和采集人复盘列表。它不影响 LeRobot 数据集本身的读取路径。
+
+推荐使用 `LQCP_RAW_EPISODE_ROOTS` 配置一个或多个原始数据根目录，多个路径用英文逗号或分号分隔，服务会按顺序查找：
+
+```bash
+cd /mnt/LerobotQualityCheckPlatform
+LQCP_RAW_EPISODE_ROOTS=/mnt/nm_data/data/nedf3,/mnt/nm_data/data/midtrain \
+HOST=0.0.0.0 PORT=18080 ./run.sh
+```
+
+如果以后从 `nedf3` 切到新的原始数据根，只需要改这个环境变量并重启服务：
+
+```bash
+LQCP_RAW_EPISODE_ROOTS=/mnt/nm_data/data/nedf4,/mnt/nm_data/data/midtrain \
+HOST=0.0.0.0 PORT=18080 ./run.sh
+```
+
+兼容旧配置：
+
+```bash
+LQCP_RAW_NEDF_ROOT=/mnt/nm_data/data/nedf
+LQCP_RAW_MIDTRAIN_ROOT=/mnt/nm_data/data/midtrain
+```
+
+当 `LQCP_RAW_EPISODE_ROOTS` 已设置时，旧的 `LQCP_RAW_NEDF_ROOT` / `LQCP_RAW_MIDTRAIN_ROOT` 会被忽略。
+
+服务会把当前 raw roots 签名写入 collector 缓存。以后调整 `LQCP_RAW_EPISODE_ROOTS` 并重启后，旧路径下的 collector 缓存会自动重新拉取，不需要手动清理 `labels.db`。
+
+相关可调参数：
+
+| 环境变量 | 默认值 | 说明 |
+|---|---:|---|
+| `LQCP_RAW_EPISODE_ROOTS` | 空 | 推荐配置，逗号/分号分隔多个原始数据根路径 |
+| `LQCP_RAW_NEDF_ROOT` | `/mnt/nm_data/data/nedf` | 旧版 NEDF 根路径 |
+| `LQCP_RAW_MIDTRAIN_ROOT` | `/mnt/nm_data/data/midtrain` | 旧版 midtrain 根路径 |
+| `LQCP_RAW_METADATA_TIMEOUT` | `3` | 单个 metadata 读取超时时间，单位秒 |
+| `LQCP_COLLECTOR_CACHE_WORKERS` | `3` | 后台采集人缓存并发数 |
+| `LQCP_COLLECTOR_CACHE_NEGATIVE_TTL` | `86400` | 未命中或缺少 collector 的缓存重试间隔，单位秒 |
+
+可用健康接口确认服务当前使用的原始数据根路径：
+
+```bash
+curl -fsS http://127.0.0.1:18080/api/health
+```
+
 ## 数据集格式
 
 期望的数据集结构：

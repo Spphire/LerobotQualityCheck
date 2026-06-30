@@ -35,10 +35,6 @@ VIDEO_PROXY_ROOT = PROJECT_ROOT / "video_proxy"
 SETTINGS_PATH = QC_ROOT / "settings.json"
 USER_SESSIONS_DB_PATH = QC_ROOT / "user_sessions.db"
 ALLOWED_DATASET_ROOT = Path("/mnt").resolve()
-RAW_EPISODE_ROOTS = [
-    Path(os.environ.get("LQCP_RAW_NEDF_ROOT", "/mnt/nm_data/data/nedf")),
-    Path(os.environ.get("LQCP_RAW_MIDTRAIN_ROOT", "/mnt/nm_data/data/midtrain")),
-]
 RAW_METADATA_TIMEOUT_SECONDS = float(os.environ.get("LQCP_RAW_METADATA_TIMEOUT", "3"))
 COLLECTOR_CACHE_WORKERS = max(1, int(os.environ.get("LQCP_COLLECTOR_CACHE_WORKERS", "3")))
 COLLECTOR_CACHE_NEGATIVE_TTL_SECONDS = int(os.environ.get("LQCP_COLLECTOR_CACHE_NEGATIVE_TTL", str(24 * 60 * 60)))
@@ -57,7 +53,7 @@ TRAJECTORY_CACHE: dict[tuple[str, int, int, int], dict[str, Any]] = {}
 RAW_METADATA_CACHE: dict[str, dict[str, Any]] = {}
 COLLECTOR_CACHE_QUEUE: queue.PriorityQueue[tuple[int, int, str, str, int, str]] = queue.PriorityQueue()
 COLLECTOR_CACHE_PENDING: dict[tuple[str, int], int] = {}
-COLLECTOR_PREFETCH_KEYS: set[tuple[str, tuple[Any, ...]]] = set()
+COLLECTOR_PREFETCH_KEYS: set[tuple[Any, ...]] = set()
 COLLECTOR_QUEUE_SEQUENCE = 0
 EPISODE_PRESENCE: dict[str, dict[str, dict[str, float]]] = {}
 DATASET_CACHE_LOCK = threading.Lock()
@@ -75,6 +71,30 @@ class AppError(Exception):
         super().__init__(message)
         self.message = message
         self.status = status
+
+
+def configured_raw_episode_roots() -> list[Path]:
+    raw_roots = os.environ.get("LQCP_RAW_EPISODE_ROOTS", "").strip()
+    if raw_roots:
+        parts = [part.strip() for part in re.split(r"[,;]", raw_roots) if part.strip()]
+    else:
+        parts = [
+            os.environ.get("LQCP_RAW_NEDF_ROOT", "/mnt/nm_data/data/nedf"),
+            os.environ.get("LQCP_RAW_MIDTRAIN_ROOT", "/mnt/nm_data/data/midtrain"),
+        ]
+    roots = []
+    seen = set()
+    for part in parts:
+        key = str(Path(part))
+        if key in seen:
+            continue
+        seen.add(key)
+        roots.append(Path(part))
+    return roots
+
+
+def raw_episode_roots_signature() -> str:
+    return json.dumps([str(root) for root in configured_raw_episode_roots()], ensure_ascii=False)
 
 
 def utc_now() -> str:
@@ -438,6 +458,7 @@ def init_label_db(conn: sqlite3.Connection) -> None:
             collector TEXT NOT NULL DEFAULT '',
             raw_path TEXT NOT NULL DEFAULT '',
             metadata_path TEXT NOT NULL DEFAULT '',
+            raw_roots TEXT NOT NULL DEFAULT '',
             found INTEGER NOT NULL DEFAULT 0,
             status TEXT NOT NULL DEFAULT 'missing',
             attempts INTEGER NOT NULL DEFAULT 0,
@@ -447,6 +468,9 @@ def init_label_db(conn: sqlite3.Connection) -> None:
         )
         """
     )
+    columns = {row["name"] for row in conn.execute("PRAGMA table_info(collector_cache)")}
+    if "raw_roots" not in columns:
+        conn.execute("ALTER TABLE collector_cache ADD COLUMN raw_roots TEXT NOT NULL DEFAULT ''")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_collector_cache_uuid ON collector_cache(dataset_id, episode_uuid)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_collector_cache_collector ON collector_cache(dataset_id, collector)")
     conn.commit()
@@ -984,16 +1008,7 @@ def raw_metadata_candidate_paths(episode_uuid: str) -> list[Path]:
     uuid = str(episode_uuid or "").strip().lower()
     if not uuid:
         return []
-    roots = []
-    seen = set()
-    for root in RAW_EPISODE_ROOTS:
-        root_path = Path(root)
-        key = str(root_path)
-        if key in seen:
-            continue
-        seen.add(key)
-        roots.append(root_path)
-    return [root / uuid / "preprocessed" / "metadata.json" for root in roots]
+    return [root / uuid / "preprocessed" / "metadata.json" for root in configured_raw_episode_roots()]
 
 
 def collector_from_metadata(metadata: dict[str, Any]) -> str:
@@ -1095,6 +1110,7 @@ def raw_episode_metadata(episode_uuid: str) -> dict[str, Any]:
         "collector": "",
         "raw_path": "",
         "metadata_path": "",
+        "raw_roots": raw_episode_roots_signature(),
         "found": False,
     }
     for metadata_path in raw_metadata_candidate_paths(uuid):
@@ -1106,6 +1122,7 @@ def raw_episode_metadata(episode_uuid: str) -> dict[str, Any]:
             "collector": collector_from_metadata(metadata),
             "raw_path": str(metadata_path.parents[1]),
             "metadata_path": str(metadata_path),
+            "raw_roots": raw_episode_roots_signature(),
             "found": True,
         }
         break
@@ -1134,6 +1151,7 @@ def collector_cache_row_to_payload(row: sqlite3.Row) -> dict[str, Any]:
         "collector": row["collector"],
         "raw_path": row["raw_path"],
         "metadata_path": row["metadata_path"],
+        "raw_roots": row["raw_roots"],
         "found": bool(row["found"]),
         "status": row["status"],
         "attempts": int(row["attempts"] or 0),
@@ -1149,6 +1167,7 @@ def empty_collector_metadata(episode: dict[str, Any] | None, status: str = "queu
         "collector": "",
         "raw_path": "",
         "metadata_path": "",
+        "raw_roots": raw_episode_roots_signature(),
         "found": False,
         "status": status,
         "attempts": 0,
@@ -1160,6 +1179,8 @@ def empty_collector_metadata(episode: dict[str, Any] | None, status: str = "queu
 
 def collector_cache_should_fetch(payload: dict[str, Any] | None) -> bool:
     if not payload:
+        return True
+    if payload.get("raw_roots") != raw_episode_roots_signature():
         return True
     if payload.get("collector") or payload.get("status") == "fetched":
         return False
@@ -1174,7 +1195,7 @@ def collector_cache_get(dataset_path: Path, episode_index: int) -> dict[str, Any
         row = conn.execute(
             """
             SELECT dataset_id, episode_index, dataset_path, episode_name, episode_uuid,
-                   collector, raw_path, metadata_path, found, status, attempts,
+                   collector, raw_path, metadata_path, raw_roots, found, status, attempts,
                    last_error, updated_at
             FROM collector_cache
             WHERE dataset_id = ? AND episode_index = ?
@@ -1190,7 +1211,7 @@ def collector_cache_map(dataset_path: Path) -> dict[int, dict[str, Any]]:
         rows = conn.execute(
             """
             SELECT dataset_id, episode_index, dataset_path, episode_name, episode_uuid,
-                   collector, raw_path, metadata_path, found, status, attempts,
+                   collector, raw_path, metadata_path, raw_roots, found, status, attempts,
                    last_error, updated_at
             FROM collector_cache
             WHERE dataset_id = ?
@@ -1226,9 +1247,9 @@ def upsert_collector_cache(
             """
             INSERT INTO collector_cache (
                 dataset_id, episode_index, dataset_path, episode_name, episode_uuid,
-                collector, raw_path, metadata_path, found, status, attempts,
+                collector, raw_path, metadata_path, raw_roots, found, status, attempts,
                 last_error, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(dataset_id, episode_index) DO UPDATE SET
                 dataset_path = excluded.dataset_path,
                 episode_name = excluded.episode_name,
@@ -1236,6 +1257,7 @@ def upsert_collector_cache(
                 collector = excluded.collector,
                 raw_path = excluded.raw_path,
                 metadata_path = excluded.metadata_path,
+                raw_roots = excluded.raw_roots,
                 found = excluded.found,
                 status = excluded.status,
                 attempts = excluded.attempts,
@@ -1251,6 +1273,7 @@ def upsert_collector_cache(
                 collector,
                 str(source_metadata.get("raw_path") or ""),
                 str(source_metadata.get("metadata_path") or ""),
+                str(source_metadata.get("raw_roots") or raw_episode_roots_signature()),
                 1 if found else 0,
                 status,
                 attempts,
@@ -1264,6 +1287,7 @@ def upsert_collector_cache(
         "collector": collector,
         "raw_path": str(source_metadata.get("raw_path") or ""),
         "metadata_path": str(source_metadata.get("metadata_path") or ""),
+        "raw_roots": str(source_metadata.get("raw_roots") or raw_episode_roots_signature()),
         "found": found,
         "status": status,
         "attempts": attempts,
@@ -1358,7 +1382,7 @@ def collector_cache_worker() -> None:
 
 def schedule_dataset_collector_prefetch(dataset_path: Path, dataset: dict[str, Any]) -> None:
     fingerprint = tuple(dataset.get("fingerprint") or ())
-    prefetch_key = (dataset_id(dataset_path), fingerprint)
+    prefetch_key = (dataset_id(dataset_path), fingerprint, raw_episode_roots_signature())
     with COLLECTOR_CACHE_LOCK:
         if prefetch_key in COLLECTOR_PREFETCH_KEYS:
             return
@@ -2251,6 +2275,7 @@ class QCRequestHandler(BaseHTTPRequestHandler):
                     "ok": True,
                     "dataset_path": str(dataset_path),
                     "dataset_id": dataset_id(dataset_path),
+                    "raw_episode_roots": [str(root) for root in configured_raw_episode_roots()],
                     "user": user,
                     "time": utc_now(),
                 }
