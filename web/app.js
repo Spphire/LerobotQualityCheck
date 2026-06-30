@@ -1141,6 +1141,10 @@ function rawVectorToDisplayVector(vector, dataUpAxis) {
   return transformed;
 }
 
+function defaultDisplayCameraEye() {
+  return new Three3D.Vector3(1.15, -1.25, 0.82);
+}
+
 function trajectoryTrace(name, points = [], color, width = 5, opacity = 0.78) {
   const valid = compactPoints(points);
   return {
@@ -1936,13 +1940,11 @@ function createTrajectoryView(trajectory) {
     Math.max(bounds.span * 30, 10),
   );
   camera.up.set(0, 0, 1);
-  const cameraEye = cameraFromHeadMinusZ(trajectory).eye;
-  let eyeVector = rawVectorToDisplayVector(new Three3D.Vector3(cameraEye.x, cameraEye.y, cameraEye.z), upAxis);
-  if (eyeVector.lengthSq() < 1e-8) {
-    const fallbackEye = defaultCameraEyeForUpAxis(upAxis);
-    eyeVector = rawVectorToDisplayVector(new Three3D.Vector3(fallbackEye.x, fallbackEye.y, fallbackEye.z), upAxis);
-  }
   const displayCenter = rawVectorToDisplayVector(bounds.center, upAxis);
+  const eyeVector = defaultDisplayCameraEye();
+  if (eyeVector.lengthSq() < 1e-8) {
+    eyeVector.copy(new Three3D.Vector3(1, -1, 0.7));
+  }
   eyeVector.normalize().multiplyScalar(Math.max(bounds.span * 0.9, 0.2));
   camera.position.copy(displayCenter).add(eyeVector);
   camera.lookAt(displayCenter);
