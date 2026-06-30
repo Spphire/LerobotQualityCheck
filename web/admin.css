@@ -142,6 +142,44 @@ body.admin-page {
   min-width: 0;
 }
 
+.rank-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(420px, 1fr));
+  gap: 16px;
+  min-width: 0;
+}
+
+.rank-medal {
+  display: inline-grid;
+  min-width: 28px;
+  height: 24px;
+  place-items: center;
+  padding: 0 8px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.72);
+  color: var(--muted);
+  font-weight: 700;
+}
+
+.rank-1 {
+  border-color: rgba(255, 149, 0, 0.42);
+  background: rgba(255, 149, 0, 0.16);
+  color: var(--amber);
+}
+
+.rank-2 {
+  border-color: rgba(118, 118, 128, 0.28);
+  background: rgba(118, 118, 128, 0.14);
+  color: #5f5f65;
+}
+
+.rank-3 {
+  border-color: rgba(176, 92, 32, 0.26);
+  background: rgba(176, 92, 32, 0.12);
+  color: #9a561c;
+}
+
 .table-wrap {
   overflow: auto;
 }
@@ -206,7 +244,8 @@ body.admin-page {
   }
 
   .admin-metrics,
-  .admin-grid {
+  .admin-grid,
+  .rank-grid {
     grid-template-columns: 1fr;
   }
 }

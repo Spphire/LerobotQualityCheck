@@ -3,7 +3,7 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>LeRobot 标注审查</title>
+    <title>LeRobot 用户排行榜</title>
     <link rel="stylesheet" href="/styles.css?v=20260630-apple-style" />
     <link rel="stylesheet" href="/admin.css?v=20260630-apple-style" />
   </head>
@@ -11,12 +11,12 @@
     <header class="admin-topbar">
       <div>
         <p class="admin-eyebrow">LeRobot QC</p>
-        <h1>标注审查</h1>
+        <h1>用户排行榜</h1>
         <p id="datasetPath" class="admin-subtitle"></p>
       </div>
       <nav class="admin-actions">
-        <a href="/admin/review" class="admin-link primary" data-context-link="/admin/review">admin质检</a>
-        <a href="/rank" class="admin-link" data-context-link="/rank">排行榜</a>
+        <a href="/admin" class="admin-link" data-context-link="/admin">审查面板</a>
+        <a href="/admin/review" class="admin-link" data-context-link="/admin/review">admin质检</a>
         <a href="/" class="admin-link" data-context-link="/">普通质检</a>
         <button id="refreshButton" type="button">刷新</button>
       </nav>
@@ -46,70 +46,55 @@
         </div>
       </section>
 
-      <section class="admin-section">
-        <header>
-          <h2>用户标注情况</h2>
-          <span id="updatedAt"></span>
-        </header>
-        <div class="table-wrap">
-          <table>
-            <thead>
-              <tr>
-                <th>用户</th>
-                <th>已标</th>
-                <th>接收</th>
-                <th>拒绝</th>
-                <th>待审</th>
-                <th>事件数</th>
-                <th>最近活动</th>
-              </tr>
-            </thead>
-            <tbody id="usersBody"></tbody>
-          </table>
-        </div>
-      </section>
-
-      <section class="admin-grid">
+      <section class="rank-grid">
         <section class="admin-section">
           <header>
-            <h2>当前占用</h2>
-            <span id="activeCount">0</span>
+            <h2>标注数排行榜</h2>
+            <span id="markedUpdatedAt"></span>
           </header>
-          <div class="table-wrap compact">
+          <div class="table-wrap">
             <table>
               <thead>
                 <tr>
-                  <th>Episode</th>
+                  <th>#</th>
                   <th>用户</th>
+                  <th>标注数</th>
+                  <th>接收</th>
+                  <th>拒绝</th>
+                  <th>拒绝率</th>
+                  <th>最近活动</th>
                 </tr>
               </thead>
-              <tbody id="activeBody"></tbody>
+              <tbody id="markedRankBody"></tbody>
             </table>
           </div>
         </section>
 
         <section class="admin-section">
           <header>
-            <h2>最近标注</h2>
-            <span id="recentCount">0</span>
+            <h2>拒绝率排行榜</h2>
+            <span id="rejectRateUpdatedAt"></span>
           </header>
-          <div class="table-wrap compact">
+          <div class="table-wrap">
             <table>
               <thead>
                 <tr>
-                  <th>Episode</th>
-                  <th>状态</th>
+                  <th>#</th>
                   <th>用户</th>
-                  <th>时间</th>
+                  <th>拒绝率</th>
+                  <th>拒绝</th>
+                  <th>标注数</th>
+                  <th>接收</th>
+                  <th>最近活动</th>
                 </tr>
               </thead>
-              <tbody id="recentBody"></tbody>
+              <tbody id="rejectRateRankBody"></tbody>
             </table>
           </div>
         </section>
       </section>
     </main>
 
-    <script src="/admin.js?v=20260630-admin-dataset"></script>
+    <script src="/rank.js?v=20260630-rank"></script>
   </body>
 </html>

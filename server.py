@@ -1028,6 +1028,64 @@ def admin_payload(dataset_path: Path, dataset: dict[str, Any], store: dict[str, 
     }
 
 
+def rank_payload(dataset_path: Path, dataset: dict[str, Any], store: dict[str, Any]) -> dict[str, Any]:
+    event_users = label_event_user_summaries(dataset_path)
+    users = []
+    for item in user_summaries(dataset, store):
+        user = item["user"]
+        counts = item.get("counts") or {}
+        marked = int(counts.get("marked") or 0)
+        reject = int(counts.get("reject") or 0)
+        accept = int(counts.get("accept") or 0)
+        pending = int(counts.get("pending") or 0)
+        reject_rate = reject / marked if marked else 0
+        users.append({
+            "user": user,
+            "marked": marked,
+            "reject": reject,
+            "accept": accept,
+            "pending": pending,
+            "reject_rate": reject_rate,
+            **event_users.get(user, {"event_count": 0, "last_event_at": ""}),
+        })
+    for user, event_summary in event_users.items():
+        if any(item["user"] == user for item in users):
+            continue
+        users.append({
+            "user": user,
+            "marked": 0,
+            "reject": 0,
+            "accept": 0,
+            "pending": 0,
+            "reject_rate": 0,
+            **event_summary,
+        })
+
+    by_marked = sorted(
+        users,
+        key=lambda item: (-int(item.get("marked") or 0), -int(item.get("reject") or 0), str(item.get("user") or "")),
+    )
+    by_reject_rate = sorted(
+        users,
+        key=lambda item: (
+            -float(item.get("reject_rate") or 0),
+            -int(item.get("marked") or 0),
+            str(item.get("user") or ""),
+        ),
+    )
+    return {
+        "dataset_path": str(dataset_path),
+        "dataset_id": dataset_id(dataset_path),
+        "generated_at": utc_now(),
+        "counts": status_counts_from_label_map(dataset, store.get("labels") or {}),
+        "users": users,
+        "rankings": {
+            "marked": by_marked,
+            "reject_rate": by_reject_rate,
+        },
+    }
+
+
 def compact_episode(
     dataset_path: Path,
     episode: dict[str, Any],
@@ -1505,6 +1563,8 @@ class QCRequestHandler(BaseHTTPRequestHandler):
                 self.handle_static(method, parsed, default_file="admin.html")
             elif parsed.path in {"/admin/review", "/admin/review/"}:
                 self.handle_static(method, parsed, default_file="admin_review.html")
+            elif parsed.path in {"/rank", "/rank/"}:
+                self.handle_static(method, parsed, default_file="rank.html")
             else:
                 self.handle_static(method, parsed)
         except AppError as exc:
@@ -1645,6 +1705,10 @@ class QCRequestHandler(BaseHTTPRequestHandler):
 
         if method == "GET" and parsed.path == "/api/admin":
             self.send_json(admin_payload(dataset_path, dataset, store))
+            return
+
+        if method == "GET" and parsed.path == "/api/rank":
+            self.send_json(rank_payload(dataset_path, dataset, store))
             return
 
         if method == "GET" and parsed.path == "/api/episode_lookup":
@@ -1882,6 +1946,8 @@ class QCRequestHandler(BaseHTTPRequestHandler):
         elif path in {"/admin", "/admin/"}:
             rel = default_file
         elif path in {"/admin/review", "/admin/review/"}:
+            rel = default_file
+        elif path in {"/rank", "/rank/"}:
             rel = default_file
         else:
             rel = posixpath.normpath(path.lstrip("/"))
