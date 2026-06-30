@@ -1191,7 +1191,6 @@ canvas {
 .revive-flash,
 .revive-ring,
 .revive-particles,
-.revive-title,
 .revive-collector-card,
 .revive-totem-asset,
 .revive-totem {
@@ -1433,22 +1432,6 @@ canvas {
     0 0 26px rgba(74, 222, 128, 0.74);
 }
 
-.revive-overlay.playing .revive-title {
-  left: 0;
-  bottom: 9vh;
-  width: 100%;
-  color: #fff4ad;
-  font-size: clamp(24px, 4vw, 50px);
-  font-weight: 900;
-  line-height: 1;
-  text-align: center;
-  text-shadow:
-    0 0 10px rgba(255, 255, 255, 0.82),
-    0 0 34px rgba(74, 222, 128, 0.72),
-    0 5px 0 rgba(20, 83, 45, 0.34);
-  animation: revive-title-pop 1240ms cubic-bezier(0.16, 1, 0.3, 1) both;
-}
-
 @keyframes revive-flash-pop {
   0% {
     opacity: 0;
@@ -1555,22 +1538,6 @@ canvas {
   100% {
     opacity: 0;
     transform: translate(calc(-50% + var(--x)), calc(-50% + var(--y))) scale(1.25) rotate(180deg);
-  }
-}
-
-@keyframes revive-title-pop {
-  0% {
-    opacity: 0;
-    transform: translateY(22px) scale(0.8);
-  }
-  24%,
-  66% {
-    opacity: 1;
-    transform: translateY(0) scale(1);
-  }
-  100% {
-    opacity: 0;
-    transform: translateY(-18px) scale(0.96);
   }
 }
 
