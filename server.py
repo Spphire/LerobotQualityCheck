@@ -1575,11 +1575,22 @@ def rank_payload(dataset_path: Path, dataset: dict[str, Any], store: dict[str, A
         ),
     )
     cached_collectors = collector_cache_map(dataset_path)
+    global_label_map = store.get("labels") or {}
+    unlabeled_episodes: list[dict[str, Any]] = []
     collector_stats: dict[str, dict[str, Any]] = {}
     for episode in dataset.get("episodes") or []:
         episode_index = int(episode["episode_index"])
-        label = (store.get("labels") or {}).get(str(episode_index))
+        label = global_label_map.get(str(episode_index))
         if not isinstance(label, dict):
+            unlabeled_episodes.append(
+                {
+                    "episode_index": episode_index,
+                    "episode_name": episode.get("episode_name", f"episode_{episode_index:06d}"),
+                    "episode_uuid": episode.get("episode_uuid", ""),
+                    "task_description": episode.get("task_description", ""),
+                    "task_annotation": episode.get("task_annotation", ""),
+                }
+            )
             continue
         status = review_status(label.get("status"))
         if status not in RECORDED_STATUS_VALUES:
@@ -1635,8 +1646,10 @@ def rank_payload(dataset_path: Path, dataset: dict[str, Any], store: dict[str, A
         "dataset_path": str(dataset_path),
         "dataset_id": dataset_id(dataset_path),
         "generated_at": utc_now(),
-        "counts": status_counts_from_label_map(dataset, store.get("labels") or {}),
+        "counts": status_counts_from_label_map(dataset, global_label_map),
         "collector_cache": collector_cache_summary(dataset_path, dataset, cached_collectors),
+        "unlabeled_count": len(unlabeled_episodes),
+        "unlabeled_episodes": unlabeled_episodes,
         "users": users,
         "rankings": {
             "marked": by_marked,

@@ -15,6 +15,8 @@ const el = {};
   "acceptCount",
   "rejectCount",
   "pendingCount",
+  "unlabeledSummary",
+  "unlabeledEpisodeList",
   "markedUpdatedAt",
   "rejectRateUpdatedAt",
   "collectorUpdatedAt",
@@ -208,6 +210,20 @@ function renderCollectorRejectRateRank(items = []) {
   }).join("");
 }
 
+function renderUnlabeledEpisodes(items = [], total = items.length) {
+  el.unlabeledSummary.textContent = `${formatNumber(total)} 条未标注`;
+  if (!items.length) {
+    el.unlabeledEpisodeList.innerHTML = '<div class="unlabeled-complete">当前没有未标注 episode</div>';
+    return;
+  }
+  el.unlabeledEpisodeList.innerHTML = items.map((episode) => `
+    <a class="unlabeled-chip" href="${reviewUrl(episode.episode_index)}" title="${escapeHtml(episode.episode_uuid || "")}">
+      <strong>${escapeHtml(episode.episode_name || `episode_${String(episode.episode_index).padStart(6, "0")}`)}</strong>
+      <span>index ${formatNumber(episode.episode_index)}</span>
+    </a>
+  `).join("");
+}
+
 async function loadRank() {
   const data = await requestJson(apiUrl("/api/rank"));
   syncNavigationLinks();
@@ -221,6 +237,7 @@ async function loadRank() {
   el.rejectRateUpdatedAt.textContent = updatedText;
   el.collectorUpdatedAt.textContent = updatedText;
   renderMetrics(data.counts || {});
+  renderUnlabeledEpisodes(data.unlabeled_episodes || [], data.unlabeled_count || 0);
   renderMarkedRank(data.rankings?.marked || []);
   renderRejectRateRank(data.rankings?.reject_rate || []);
   renderCollectorRejectRateRank(data.rankings?.collector_reject_rate || []);

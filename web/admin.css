@@ -149,6 +149,53 @@ body.admin-page {
   min-width: 0;
 }
 
+.unlabeled-section {
+  min-width: 0;
+}
+
+.unlabeled-episode-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  max-height: 176px;
+  overflow: auto;
+  padding: 10px;
+}
+
+.unlabeled-chip {
+  display: grid;
+  min-width: 132px;
+  min-height: 46px;
+  align-content: center;
+  gap: 2px;
+  padding: 7px 9px;
+  border: 1px solid rgba(215, 0, 21, 0.22);
+  border-radius: 8px;
+  background: rgba(215, 0, 21, 0.045);
+  color: var(--text);
+  text-decoration: none;
+}
+
+.unlabeled-chip:hover {
+  border-color: rgba(215, 0, 21, 0.38);
+  background: rgba(215, 0, 21, 0.08);
+}
+
+.unlabeled-chip strong {
+  font-size: 13px;
+  font-weight: 650;
+}
+
+.unlabeled-chip span,
+.unlabeled-complete {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.unlabeled-complete {
+  padding: 12px;
+}
+
 .rank-medal {
   display: inline-grid;
   min-width: 28px;
