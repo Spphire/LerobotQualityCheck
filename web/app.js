@@ -77,22 +77,16 @@ const state = {
   navAnchor: { listKey: "", episodeIndex: null, listIndex: -1 },
   trajectory: null,
   trajectoryRequest: 0,
-  trajectoryHighlightTraceIndexes: [],
   lastTrajectoryHighlightFrame: null,
   lastTrajectoryHighlightAt: 0,
-  trajectoryDomEventsBound: false,
-  trajectoryPlotEventsBound: false,
-  isInteractingTrajectory: false,
-  isRestoringTrajectoryCamera: false,
-  trajectoryCamera: null,
-  trajectoryCameraRevision: 0,
-  trajectoryWheelTimer: null,
   framesRequest: 0,
   searchRequest: 0,
   lastPlaybackUiAt: 0,
 };
 
-let Plotly3D = null;
+let Three3D = null;
+let OrbitControls3D = null;
+let trajectoryView = null;
 
 const el = {};
 
@@ -983,7 +977,7 @@ function loadScript(src) {
   });
 }
 
-async function loadTrajectoryRenderer() {
+async function loadTrajectoryRendererPlotlyLegacy() {
   if (window.Plotly) {
     Plotly3D = window.Plotly;
     el.trajectoryState.textContent = "等待数据";
@@ -1006,6 +1000,21 @@ async function loadTrajectoryRenderer() {
   }
   Plotly3D = window.Plotly;
   el.trajectoryState.textContent = "等待数据";
+}
+
+async function loadTrajectoryRenderer() {
+  try {
+    const [threeModule, controlsModule] = await Promise.all([
+      import("/vendor/three.module.min.js"),
+      import("/vendor/OrbitControls.js"),
+    ]);
+    Three3D = threeModule;
+    OrbitControls3D = controlsModule.OrbitControls;
+    el.trajectoryState.textContent = "waiting for data";
+  } catch (error) {
+    console.warn("Three.js load failed", error);
+    el.trajectoryState.textContent = "3D renderer failed";
+  }
 }
 
 function validPoint(point) {
@@ -1036,16 +1045,18 @@ function trajectoryAxisRanges(trajectory) {
   return { x: ranges[0], y: ranges[1], z: ranges[2] };
 }
 
-function trajectoryTrace(name, points = [], color) {
+function trajectoryTrace(name, points = [], color, width = 5, opacity = 0.78) {
   const valid = compactPoints(points);
   return {
     type: "scatter3d",
     mode: "lines",
     name,
+    showlegend: false,
     x: valid.map((point) => point[0]),
     y: valid.map((point) => point[1]),
     z: valid.map((point) => point[2]),
-    line: { color, width: 5 },
+    line: { color, width },
+    opacity,
     hovertemplate: `${name}<br>x=%{x:.4f}<br>y=%{y:.4f}<br>z=%{z:.4f}<extra></extra>`,
   };
 }
@@ -1070,7 +1081,7 @@ function endpointTrace(name, points = [], color) {
   };
 }
 
-function trajectoryFlowTrace(name, color) {
+function trajectoryFlowTrace(name, color, width = 10, opacity = 0.82) {
   return {
     type: "scatter3d",
     mode: "lines",
@@ -1079,8 +1090,8 @@ function trajectoryFlowTrace(name, color) {
     x: [],
     y: [],
     z: [],
-    line: { color, width: 10 },
-    opacity: 0.82,
+    line: { color, width },
+    opacity,
     hoverinfo: "skip",
   };
 }
@@ -1148,7 +1159,7 @@ function trajectorySample(points = [], frames = [], frame = 0) {
   if (index < 0) {
     return { point: null, trail: [], index: -1 };
   }
-  const start = Math.max(0, index - 14);
+  const start = Math.max(0, index - 28);
   const trail = [];
   for (let i = start; i <= index; i += 1) {
     if (validPoint(points[i])) {
@@ -1363,28 +1374,32 @@ function bindTrajectoryInteractionGuards() {
   }
 }
 
-function renderTrajectory3D(trajectory) {
+function renderTrajectory3DPlotlyLegacy(trajectory) {
   state.trajectory = trajectory;
   drawGripperCurves();
   if (!Plotly3D) {
     return;
   }
   const traces = [
-    trajectoryTrace("左手", trajectory.left?.points || [], "#22c55e"),
-    trajectoryTrace("右手", trajectory.right?.points || [], "#ef4444"),
-    endpointTrace("左手", trajectory.left?.points || [], "#22c55e"),
-    endpointTrace("右手", trajectory.right?.points || [], "#ef4444"),
+    trajectoryTrace("左手轨迹 glow", trajectory.left?.points || [], "rgba(34, 197, 94, 0.28)", 13, 0.38),
+    trajectoryTrace("左手轨迹", trajectory.left?.points || [], "#4ade80", 4, 0.9),
+    trajectoryTrace("右手轨迹 glow", trajectory.right?.points || [], "rgba(244, 63, 94, 0.28)", 13, 0.38),
+    trajectoryTrace("右手轨迹", trajectory.right?.points || [], "#fb7185", 4, 0.9),
+    endpointTrace("左手", trajectory.left?.points || [], "#4ade80"),
+    endpointTrace("右手", trajectory.right?.points || [], "#fb7185"),
   ].filter(Boolean);
   const highlightStart = traces.length;
   traces.push(
-    trajectoryFlowTrace("left current flow", "rgba(134, 239, 172, 0.95)"),
+    trajectoryFlowTrace("left current glow", "rgba(134, 239, 172, 0.35)", 20, 0.55),
+    trajectoryFlowTrace("left current flow", "#bbf7d0", 7, 0.98),
     trajectoryNowTrace("left current", "#22c55e"),
-    trajectoryFlowTrace("right current flow", "rgba(252, 165, 165, 0.95)"),
+    trajectoryFlowTrace("right current glow", "rgba(251, 113, 133, 0.35)", 20, 0.55),
+    trajectoryFlowTrace("right current flow", "#fecdd3", 7, 0.98),
     trajectoryNowTrace("right current", "#ef4444"),
     ...currentPoseAxesTraces("left current"),
     ...currentPoseAxesTraces("right current"),
   );
-  state.trajectoryHighlightTraceIndexes = Array.from({ length: 10 }, (_, index) => highlightStart + index);
+  state.trajectoryHighlightTraceIndexes = Array.from({ length: 12 }, (_, index) => highlightStart + index);
   state.lastTrajectoryHighlightFrame = null;
   state.lastTrajectoryHighlightAt = 0;
   state.trajectoryCamera = cloneTrajectoryCamera(cameraFromHeadMinusZ(trajectory));
@@ -1432,7 +1447,7 @@ function renderTrajectory3D(trajectory) {
   el.trajectoryState.textContent = `${formatNumber(trajectory.total_rows)} frames · stride ${trajectory.stride}`;
 }
 
-function updateTrajectoryHighlight(force = false) {
+function updateTrajectoryHighlightPlotlyLegacy(force = false) {
   if (!Plotly3D || !state.trajectory || !state.trajectoryHighlightTraceIndexes.length || !el.trajectoryCanvas) {
     return;
   }
@@ -1497,18 +1512,428 @@ function updateTrajectoryHighlight(force = false) {
     .catch(() => {});
 }
 
-function resizeTrajectoryPlot() {
+function resizeTrajectoryPlotlyLegacy() {
   if (Plotly3D && el.trajectoryCanvas) {
     Plotly3D.Plots.resize(el.trajectoryCanvas);
   }
+}
+
+function disposeThreeMaterial(material) {
+  if (Array.isArray(material)) {
+    material.forEach((item) => disposeThreeMaterial(item));
+    return;
+  }
+  material?.dispose?.();
+}
+
+function disposeThreeObject(object) {
+  object?.traverse?.((child) => {
+    child.geometry?.dispose?.();
+    disposeThreeMaterial(child.material);
+  });
+}
+
+function disposeTrajectoryView() {
+  if (!trajectoryView) {
+    return;
+  }
+  trajectoryView.controls?.dispose?.();
+  disposeThreeObject(trajectoryView.scene);
+  trajectoryView.renderer?.dispose?.();
+  trajectoryView.renderer?.domElement?.remove?.();
+  trajectoryView = null;
+}
+
+function pointToVector3(point) {
+  return new Three3D.Vector3(point[0], point[1], point[2]);
+}
+
+function trajectoryBounds(trajectory) {
+  const ranges = trajectoryAxisRanges(trajectory);
+  const center = new Three3D.Vector3(
+    (ranges.x[0] + ranges.x[1]) / 2,
+    (ranges.y[0] + ranges.y[1]) / 2,
+    (ranges.z[0] + ranges.z[1]) / 2,
+  );
+  const size = new Three3D.Vector3(
+    Math.max(ranges.x[1] - ranges.x[0], 0.08),
+    Math.max(ranges.y[1] - ranges.y[0], 0.08),
+    Math.max(ranges.z[1] - ranges.z[0], 0.08),
+  );
+  return {
+    ranges,
+    center,
+    size,
+    span: Math.max(size.x, size.y, size.z, 0.08),
+  };
+}
+
+function trajectoryContainerSize() {
+  return {
+    width: Math.max(1, el.trajectoryCanvas?.clientWidth || 640),
+    height: Math.max(1, el.trajectoryCanvas?.clientHeight || 360),
+  };
+}
+
+function applyTrajectoryRendererSize(view = trajectoryView) {
+  if (!view) {
+    return;
+  }
+  const { width, height } = trajectoryContainerSize();
+  view.renderer.setSize(width, height, false);
+  view.camera.aspect = width / height;
+  view.camera.updateProjectionMatrix();
+}
+
+function compactVectorPoints(points = []) {
+  const vectors = [];
+  compactPoints(points).forEach((point) => {
+    const vector = pointToVector3(point);
+    const previous = vectors[vectors.length - 1];
+    if (!previous || previous.distanceToSquared(vector) > 1e-12) {
+      vectors.push(vector);
+    }
+  });
+  return vectors;
+}
+
+function createPolylineCurve(points = []) {
+  const vectors = compactVectorPoints(points);
+  if (vectors.length < 2) {
+    return null;
+  }
+  const curve = new Three3D.CurvePath();
+  for (let index = 1; index < vectors.length; index += 1) {
+    curve.add(new Three3D.LineCurve3(vectors[index - 1], vectors[index]));
+  }
+  return { curve, count: vectors.length };
+}
+
+function createTubeGeometry(points = [], radius = 0.002) {
+  const path = createPolylineCurve(points);
+  if (!path) {
+    return null;
+  }
+  const tubularSegments = Math.max(3, Math.min(900, path.count * 2));
+  return new Three3D.TubeGeometry(path.curve, tubularSegments, radius, 6, false);
+}
+
+function createMeshMaterial(color, opacity = 1, additive = false) {
+  return new Three3D.MeshBasicMaterial({
+    color,
+    transparent: opacity < 1 || additive,
+    opacity,
+    blending: additive ? Three3D.AdditiveBlending : Three3D.NormalBlending,
+    depthWrite: !additive,
+  });
+}
+
+function createTubeMesh(points, radius, material) {
+  const geometry = createTubeGeometry(points, radius);
+  const mesh = new Three3D.Mesh(geometry || new Three3D.BufferGeometry(), material);
+  mesh.visible = Boolean(geometry);
+  mesh.frustumCulled = false;
+  return mesh;
+}
+
+function replaceObjectGeometry(object, geometry) {
+  const previous = object.geometry;
+  object.geometry = geometry || new Three3D.BufferGeometry();
+  object.visible = Boolean(geometry);
+  previous?.dispose?.();
+}
+
+function addTrajectoryTube(scene, points, colors, radius) {
+  const glow = createTubeMesh(
+    points,
+    radius * 4,
+    createMeshMaterial(colors.glow, 0.24, true),
+  );
+  const core = createTubeMesh(
+    points,
+    radius,
+    createMeshMaterial(colors.core, 0.86, false),
+  );
+  scene.add(glow);
+  scene.add(core);
+}
+
+function addEndpointMarkers(scene, points = [], color, radius) {
+  const valid = compactPoints(points);
+  if (!valid.length) {
+    return;
+  }
+  const geometry = new Three3D.SphereGeometry(radius, 16, 10);
+  const start = new Three3D.Mesh(geometry, createMeshMaterial(color, 0.58, true));
+  start.position.copy(pointToVector3(valid[0]));
+  scene.add(start);
+
+  const end = new Three3D.Mesh(
+    new Three3D.SphereGeometry(radius * 1.45, 18, 12),
+    createMeshMaterial(color, 0.95, true),
+  );
+  end.position.copy(pointToVector3(valid[valid.length - 1]));
+  scene.add(end);
+}
+
+function addSceneGuides(scene, bounds) {
+  const gridSize = Math.max(bounds.span * 1.08, 0.12);
+  const grid = new Three3D.GridHelper(gridSize, 10, 0x334155, 0x1f2937);
+  grid.position.set(bounds.center.x, bounds.ranges.y[0], bounds.center.z);
+  (Array.isArray(grid.material) ? grid.material : [grid.material]).forEach((material) => {
+    material.transparent = true;
+    material.opacity = 0.28;
+  });
+  scene.add(grid);
+
+  const c = bounds.center;
+  const positions = [
+    bounds.ranges.x[0], c.y, c.z, bounds.ranges.x[1], c.y, c.z,
+    c.x, bounds.ranges.y[0], c.z, c.x, bounds.ranges.y[1], c.z,
+    c.x, c.y, bounds.ranges.z[0], c.x, c.y, bounds.ranges.z[1],
+  ];
+  const colors = [
+    1, 0.25, 0.25, 1, 0.25, 0.25,
+    0.25, 1, 0.45, 0.25, 1, 0.45,
+    0.35, 0.75, 1, 0.35, 0.75, 1,
+  ];
+  const geometry = new Three3D.BufferGeometry();
+  geometry.setAttribute("position", new Three3D.Float32BufferAttribute(positions, 3));
+  geometry.setAttribute("color", new Three3D.Float32BufferAttribute(colors, 3));
+  const material = new Three3D.LineBasicMaterial({
+    vertexColors: true,
+    transparent: true,
+    opacity: 0.62,
+  });
+  scene.add(new Three3D.LineSegments(geometry, material));
+}
+
+function createAxisLine(color) {
+  const line = new Three3D.LineSegments(
+    new Three3D.BufferGeometry(),
+    new Three3D.LineBasicMaterial({ color, transparent: true, opacity: 0.96 }),
+  );
+  line.frustumCulled = false;
+  line.visible = false;
+  return line;
+}
+
+function setAxisLineSegments(line, segments) {
+  const values = [];
+  for (let index = 0; index < segments.x.length; index += 3) {
+    const a = [segments.x[index], segments.y[index], segments.z[index]];
+    const b = [segments.x[index + 1], segments.y[index + 1], segments.z[index + 1]];
+    if (validPoint(a) && validPoint(b)) {
+      values.push(...a, ...b);
+    }
+  }
+  const geometry = new Three3D.BufferGeometry();
+  if (values.length) {
+    geometry.setAttribute("position", new Three3D.Float32BufferAttribute(values, 3));
+  }
+  replaceObjectGeometry(line, values.length ? geometry : null);
+}
+
+function createDynamicHand(scene, colors, radius, markerRadius) {
+  const glowMaterial = createMeshMaterial(colors.flowGlow, 0.64, true);
+  glowMaterial.userData.baseOpacity = 0.64;
+  const coreMaterial = createMeshMaterial(colors.flowCore, 0.96, true);
+  coreMaterial.userData.baseOpacity = 0.96;
+  const flowGlow = createTubeMesh([], radius * 5.5, glowMaterial);
+  const flowCore = createTubeMesh([], radius * 2.1, coreMaterial);
+  const marker = new Three3D.Mesh(
+    new Three3D.SphereGeometry(markerRadius, 20, 14),
+    createMeshMaterial(colors.marker, 1, true),
+  );
+  marker.visible = false;
+  marker.frustumCulled = false;
+  const axes = [
+    createAxisLine(0xff4d4d),
+    createAxisLine(0x35d06f),
+    createAxisLine(0x38bdf8),
+  ];
+  scene.add(flowGlow, flowCore, marker, ...axes);
+  return {
+    flowGlow,
+    flowCore,
+    marker,
+    axes,
+    radii: {
+      glow: radius * 5.5,
+      core: radius * 2.1,
+    },
+    pulseMaterials: [glowMaterial, coreMaterial],
+  };
+}
+
+function updateDynamicHand(hand, sample, quat) {
+  replaceObjectGeometry(hand.flowGlow, createTubeGeometry(sample.trail, hand.radii.glow));
+  replaceObjectGeometry(hand.flowCore, createTubeGeometry(sample.trail, hand.radii.core));
+  if (sample.point) {
+    hand.marker.position.copy(pointToVector3(sample.point));
+    hand.marker.visible = true;
+  } else {
+    hand.marker.visible = false;
+  }
+  const axes = currentPoseAxesSegments(sample.point, quat);
+  hand.axes.forEach((axis, index) => {
+    setAxisLineSegments(axis, axes[index]);
+  });
+}
+
+function createTrajectoryView(trajectory) {
+  disposeTrajectoryView();
+  if (!Three3D || !OrbitControls3D || !el.trajectoryCanvas) {
+    return null;
+  }
+
+  const bounds = trajectoryBounds(trajectory);
+  const { width, height } = trajectoryContainerSize();
+  const renderer = new Three3D.WebGLRenderer({
+    antialias: true,
+    alpha: false,
+    powerPreference: "high-performance",
+  });
+  renderer.setClearColor(0x0b0f14, 1);
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
+  renderer.setSize(width, height, false);
+  if (Three3D.SRGBColorSpace) {
+    renderer.outputColorSpace = Three3D.SRGBColorSpace;
+  }
+  renderer.domElement.className = "trajectory-three-canvas";
+  el.trajectoryCanvas.replaceChildren(renderer.domElement);
+
+  const scene = new Three3D.Scene();
+  scene.background = new Three3D.Color(0x0b0f14);
+  addSceneGuides(scene, bounds);
+
+  const radius = Math.max(bounds.span * 0.0025, 0.0018);
+  const markerRadius = Math.max(bounds.span * 0.011, 0.0045);
+  addTrajectoryTube(scene, trajectory.left?.points || [], {
+    glow: 0x22c55e,
+    core: 0x4ade80,
+  }, radius);
+  addTrajectoryTube(scene, trajectory.right?.points || [], {
+    glow: 0xf43f5e,
+    core: 0xfb7185,
+  }, radius);
+  addEndpointMarkers(scene, trajectory.left?.points || [], 0x4ade80, markerRadius * 0.8);
+  addEndpointMarkers(scene, trajectory.right?.points || [], 0xfb7185, markerRadius * 0.8);
+
+  const camera = new Three3D.PerspectiveCamera(
+    45,
+    width / height,
+    Math.max(bounds.span / 1000, 0.0005),
+    Math.max(bounds.span * 30, 10),
+  );
+  camera.up.set(0, 1, 0);
+  const cameraEye = cameraFromHeadMinusZ(trajectory).eye;
+  const eyeVector = new Three3D.Vector3(cameraEye.x, cameraEye.y, cameraEye.z);
+  if (eyeVector.lengthSq() < 1e-8) {
+    eyeVector.set(1.35, 0.85, 1.35);
+  }
+  eyeVector.normalize().multiplyScalar(Math.max(bounds.span * 2.1, 0.45));
+  camera.position.copy(bounds.center).add(eyeVector);
+  camera.lookAt(bounds.center);
+
+  const controls = new OrbitControls3D(camera, renderer.domElement);
+  controls.target.copy(bounds.center);
+  controls.enableDamping = true;
+  controls.dampingFactor = 0.08;
+  controls.screenSpacePanning = false;
+  controls.minDistance = Math.max(bounds.span * 0.08, 0.03);
+  controls.maxDistance = Math.max(bounds.span * 12, 1);
+  controls.update();
+
+  const left = createDynamicHand(scene, {
+    flowGlow: 0x86efac,
+    flowCore: 0xbbf7d0,
+    marker: 0x22c55e,
+  }, radius, markerRadius);
+  const right = createDynamicHand(scene, {
+    flowGlow: 0xfda4af,
+    flowCore: 0xffd1d8,
+    marker: 0xef4444,
+  }, radius, markerRadius);
+
+  return {
+    scene,
+    renderer,
+    camera,
+    controls,
+    hands: { left, right },
+    pulseMaterials: [...left.pulseMaterials, ...right.pulseMaterials],
+  };
+}
+
+function renderTrajectory3D(trajectory) {
+  state.trajectory = trajectory;
+  drawGripperCurves();
+  if (!Three3D || !OrbitControls3D) {
+    return;
+  }
+  trajectoryView = createTrajectoryView(trajectory);
+  state.lastTrajectoryHighlightFrame = null;
+  state.lastTrajectoryHighlightAt = 0;
+  updateTrajectoryHighlight(true);
+  renderTrajectoryScene();
+  el.trajectoryState.textContent = `${formatNumber(trajectory.total_rows)} frames / stride ${trajectory.stride}`;
+}
+
+function updateTrajectoryHighlight(force = false) {
+  if (!trajectoryView || !state.trajectory) {
+    return;
+  }
+  const frame = currentFrameNumber();
+  const roundedFrame = Math.round(frame);
+  const now = performance.now();
+  if (!force && state.lastTrajectoryHighlightFrame === roundedFrame) {
+    return;
+  }
+  if (!force && now - state.lastTrajectoryHighlightAt < 60) {
+    return;
+  }
+  state.lastTrajectoryHighlightFrame = roundedFrame;
+  state.lastTrajectoryHighlightAt = now;
+
+  const frames = state.trajectory.frames || [];
+  const left = trajectorySample(state.trajectory.left?.points || [], frames, frame);
+  const right = trajectorySample(state.trajectory.right?.points || [], frames, frame);
+  updateDynamicHand(
+    trajectoryView.hands.left,
+    left,
+    state.trajectory.left?.quaternions?.[left.index],
+  );
+  updateDynamicHand(
+    trajectoryView.hands.right,
+    right,
+    state.trajectory.right?.quaternions?.[right.index],
+  );
+}
+
+function renderTrajectoryScene(now = performance.now()) {
+  if (!trajectoryView) {
+    return;
+  }
+  const pulse = 0.86 + Math.sin(now * 0.008) * 0.12;
+  trajectoryView.pulseMaterials.forEach((material) => {
+    material.opacity = Math.max(0.2, material.userData.baseOpacity * pulse);
+  });
+  trajectoryView.controls.update();
+  trajectoryView.renderer.render(trajectoryView.scene, trajectoryView.camera);
+}
+
+function resizeTrajectoryPlot() {
+  applyTrajectoryRendererSize();
+  renderTrajectoryScene();
 }
 
 async function loadTrajectoryForEpisode(episodeIndex) {
   const requestId = state.trajectoryRequest + 1;
   state.trajectoryRequest = requestId;
   state.trajectory = null;
-  state.trajectoryHighlightTraceIndexes = [];
   state.lastTrajectoryHighlightFrame = null;
+  disposeTrajectoryView();
   el.trajectoryState.textContent = "加载中";
   drawGripperCurves();
   try {
@@ -2374,6 +2799,7 @@ function animationLoop(now = 0) {
     drawGripperCurves();
     updateTrajectoryHighlight(false);
   }
+  renderTrajectoryScene(now);
   window.requestAnimationFrame(animationLoop);
 }
 
