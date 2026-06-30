@@ -90,9 +90,32 @@
             </table>
           </div>
         </section>
+
+        <section class="admin-section">
+          <header>
+            <h2>采集人拒绝率排行榜</h2>
+            <span id="collectorUpdatedAt"></span>
+          </header>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>#</th>
+                  <th>采集人</th>
+                  <th>拒绝率</th>
+                  <th>拒绝</th>
+                  <th>标注数</th>
+                  <th>接收</th>
+                  <th>待审</th>
+                </tr>
+              </thead>
+              <tbody id="collectorRejectRateRankBody"></tbody>
+            </table>
+          </div>
+        </section>
       </section>
     </main>
 
-    <script src="/rank.js?v=20260630-rank"></script>
+    <script src="/rank.js?v=20260630-collector-rank"></script>
   </body>
 </html>

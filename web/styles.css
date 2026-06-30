@@ -1005,7 +1005,7 @@ canvas {
   border-bottom: 1px solid rgba(255, 255, 255, 0.45);
   background: linear-gradient(90deg, transparent, rgba(255, 59, 48, 0.1), rgba(255, 59, 48, 0.96), rgba(255, 214, 10, 0.78), transparent);
   box-shadow: 0 0 20px rgba(255, 59, 48, 0.68), 0 0 52px rgba(255, 149, 0, 0.32);
-  animation: reject-slash-sweep 980ms cubic-bezier(0.16, 1, 0.3, 1) both;
+  animation: reject-slash-sweep 900ms cubic-bezier(0.16, 1, 0.3, 1) both;
 }
 
 .reject-overlay.playing .reject-card {
@@ -1023,7 +1023,7 @@ canvas {
   text-align: center;
   box-shadow: 0 24px 90px rgba(0, 0, 0, 0.34);
   backdrop-filter: blur(18px) saturate(150%);
-  animation: reject-card-pop 1500ms cubic-bezier(0.16, 1, 0.3, 1) both;
+  animation: reject-card-pop 1180ms cubic-bezier(0.16, 1, 0.3, 1) both;
 }
 
 .reject-kicker {
@@ -1069,11 +1069,11 @@ canvas {
 }
 
 .reject-overlay.playing #rejectCollectorName::before {
-  animation: reject-name-left 1500ms cubic-bezier(0.16, 1, 0.3, 1) both;
+  animation: reject-name-left 900ms cubic-bezier(0.16, 1, 0.3, 1) both;
 }
 
 .reject-overlay.playing #rejectCollectorName::after {
-  animation: reject-name-right 1500ms cubic-bezier(0.16, 1, 0.3, 1) both;
+  animation: reject-name-right 900ms cubic-bezier(0.16, 1, 0.3, 1) both;
 }
 
 @keyframes reject-slash-sweep {
@@ -1096,11 +1096,11 @@ canvas {
 
 @keyframes reject-name-left {
   0%,
-  34% {
+  18% {
     opacity: 1;
     transform: translateX(-50%) translate(0, 0) rotate(0deg);
   }
-  58% {
+  44% {
     opacity: 1;
     transform: translateX(-50%) translate(-28px, 8px) rotate(-5deg);
   }
@@ -1112,11 +1112,11 @@ canvas {
 
 @keyframes reject-name-right {
   0%,
-  34% {
+  18% {
     opacity: 1;
     transform: translateX(-50%) translate(0, 0) rotate(0deg);
   }
-  58% {
+  44% {
     opacity: 1;
     transform: translateX(-50%) translate(30px, -2px) rotate(4deg);
   }
@@ -1132,7 +1132,7 @@ canvas {
     transform: translateY(18px) scale(0.92);
   }
   20%,
-  74% {
+  68% {
     opacity: 1;
     transform: translateY(0) scale(1);
   }

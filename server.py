@@ -10,6 +10,7 @@ import math
 import mimetypes
 import os
 import posixpath
+import queue
 import re
 import secrets
 import sqlite3
@@ -39,6 +40,8 @@ RAW_EPISODE_ROOTS = [
     Path(os.environ.get("LQCP_RAW_MIDTRAIN_ROOT", "/mnt/nm_data/data/midtrain")),
 ]
 RAW_METADATA_TIMEOUT_SECONDS = float(os.environ.get("LQCP_RAW_METADATA_TIMEOUT", "3"))
+COLLECTOR_CACHE_WORKERS = max(1, int(os.environ.get("LQCP_COLLECTOR_CACHE_WORKERS", "3")))
+COLLECTOR_CACHE_NEGATIVE_TTL_SECONDS = int(os.environ.get("LQCP_COLLECTOR_CACHE_NEGATIVE_TTL", str(24 * 60 * 60)))
 
 STATUS_VALUES = {"reject", "pending", "accept", "unlabeled"}
 STATUS_ALIASES = {"bad": "reject", "review": "pending", "good": "accept"}
@@ -52,9 +55,14 @@ USER_SESSION_COOKIE = "lqcp_client_id"
 DATASET_CACHE: dict[str, dict[str, Any]] = {}
 TRAJECTORY_CACHE: dict[tuple[str, int, int, int], dict[str, Any]] = {}
 RAW_METADATA_CACHE: dict[str, dict[str, Any]] = {}
+COLLECTOR_CACHE_QUEUE: queue.PriorityQueue[tuple[int, int, str, str, int, str]] = queue.PriorityQueue()
+COLLECTOR_CACHE_PENDING: dict[tuple[str, int], int] = {}
+COLLECTOR_PREFETCH_KEYS: set[tuple[str, tuple[Any, ...]]] = set()
+COLLECTOR_QUEUE_SEQUENCE = 0
 EPISODE_PRESENCE: dict[str, dict[str, dict[str, float]]] = {}
 DATASET_CACHE_LOCK = threading.Lock()
 RAW_METADATA_LOCK = threading.Lock()
+COLLECTOR_CACHE_LOCK = threading.Lock()
 LABEL_LOCK = threading.Lock()
 PRESENCE_LOCK = threading.Lock()
 SETTINGS_LOCK = threading.Lock()
@@ -419,6 +427,28 @@ def init_label_db(conn: sqlite3.Connection) -> None:
         """
     )
     conn.execute("CREATE INDEX IF NOT EXISTS idx_label_events_episode ON label_events(dataset_id, episode_index, id)")
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS collector_cache (
+            dataset_id TEXT NOT NULL,
+            episode_index INTEGER NOT NULL,
+            dataset_path TEXT NOT NULL,
+            episode_name TEXT NOT NULL DEFAULT '',
+            episode_uuid TEXT NOT NULL DEFAULT '',
+            collector TEXT NOT NULL DEFAULT '',
+            raw_path TEXT NOT NULL DEFAULT '',
+            metadata_path TEXT NOT NULL DEFAULT '',
+            found INTEGER NOT NULL DEFAULT 0,
+            status TEXT NOT NULL DEFAULT 'missing',
+            attempts INTEGER NOT NULL DEFAULT 0,
+            last_error TEXT NOT NULL DEFAULT '',
+            updated_at TEXT NOT NULL,
+            PRIMARY KEY (dataset_id, episode_index)
+        )
+        """
+    )
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_collector_cache_uuid ON collector_cache(dataset_id, episode_uuid)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_collector_cache_collector ON collector_cache(dataset_id, collector)")
     conn.commit()
 
 
@@ -919,6 +949,7 @@ def load_dataset(dataset_path: Path, refresh: bool = False) -> dict[str, Any]:
 
     with DATASET_CACHE_LOCK:
         DATASET_CACHE[cache_key] = dataset
+    schedule_dataset_collector_prefetch(dataset_path, dataset)
     return dataset
 
 
@@ -1056,7 +1087,7 @@ def raw_episode_metadata(episode_uuid: str) -> dict[str, Any]:
         return {}
     with RAW_METADATA_LOCK:
         cached = RAW_METADATA_CACHE.get(uuid)
-        if cached is not None:
+        if cached is not None and cached.get("found"):
             return dict(cached)
 
     result: dict[str, Any] = {
@@ -1079,9 +1110,309 @@ def raw_episode_metadata(episode_uuid: str) -> dict[str, Any]:
         }
         break
 
-    with RAW_METADATA_LOCK:
-        RAW_METADATA_CACHE[uuid] = dict(result)
+    if result.get("found"):
+        with RAW_METADATA_LOCK:
+            RAW_METADATA_CACHE[uuid] = dict(result)
     return result
+
+
+def iso_age_seconds(value: str | None) -> float:
+    if not value:
+        return float("inf")
+    try:
+        parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except ValueError:
+        return float("inf")
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return (datetime.now(timezone.utc) - parsed).total_seconds()
+
+
+def collector_cache_row_to_payload(row: sqlite3.Row) -> dict[str, Any]:
+    return {
+        "episode_uuid": row["episode_uuid"],
+        "collector": row["collector"],
+        "raw_path": row["raw_path"],
+        "metadata_path": row["metadata_path"],
+        "found": bool(row["found"]),
+        "status": row["status"],
+        "attempts": int(row["attempts"] or 0),
+        "last_error": row["last_error"] or "",
+        "updated_at": row["updated_at"],
+        "cached": True,
+    }
+
+
+def empty_collector_metadata(episode: dict[str, Any] | None, status: str = "queued") -> dict[str, Any]:
+    return {
+        "episode_uuid": str((episode or {}).get("episode_uuid") or "").strip().lower(),
+        "collector": "",
+        "raw_path": "",
+        "metadata_path": "",
+        "found": False,
+        "status": status,
+        "attempts": 0,
+        "last_error": "",
+        "updated_at": "",
+        "cached": False,
+    }
+
+
+def collector_cache_should_fetch(payload: dict[str, Any] | None) -> bool:
+    if not payload:
+        return True
+    if payload.get("collector") or payload.get("status") == "fetched":
+        return False
+    if payload.get("status") in {"missing", "missing_collector", "error"}:
+        return iso_age_seconds(payload.get("updated_at")) > COLLECTOR_CACHE_NEGATIVE_TTL_SECONDS
+    return True
+
+
+def collector_cache_get(dataset_path: Path, episode_index: int) -> dict[str, Any] | None:
+    with connect_label_db(dataset_path) as conn:
+        init_label_db(conn)
+        row = conn.execute(
+            """
+            SELECT dataset_id, episode_index, dataset_path, episode_name, episode_uuid,
+                   collector, raw_path, metadata_path, found, status, attempts,
+                   last_error, updated_at
+            FROM collector_cache
+            WHERE dataset_id = ? AND episode_index = ?
+            """,
+            (dataset_id(dataset_path), episode_index),
+        ).fetchone()
+    return collector_cache_row_to_payload(row) if row else None
+
+
+def collector_cache_map(dataset_path: Path) -> dict[int, dict[str, Any]]:
+    with connect_label_db(dataset_path) as conn:
+        init_label_db(conn)
+        rows = conn.execute(
+            """
+            SELECT dataset_id, episode_index, dataset_path, episode_name, episode_uuid,
+                   collector, raw_path, metadata_path, found, status, attempts,
+                   last_error, updated_at
+            FROM collector_cache
+            WHERE dataset_id = ?
+            """,
+            (dataset_id(dataset_path),),
+        ).fetchall()
+    return {int(row["episode_index"]): collector_cache_row_to_payload(row) for row in rows}
+
+
+def upsert_collector_cache(
+    dataset_path: Path,
+    episode: dict[str, Any],
+    source_metadata: dict[str, Any],
+    error: str = "",
+) -> dict[str, Any]:
+    episode_index = int(episode["episode_index"])
+    episode_uuid = str(source_metadata.get("episode_uuid") or episode.get("episode_uuid") or "").strip().lower()
+    found = bool(source_metadata.get("found"))
+    collector = str(source_metadata.get("collector") or "").strip()
+    status = "error" if error else ("fetched" if found and collector else ("missing_collector" if found else "missing"))
+    now = utc_now()
+    with connect_label_db(dataset_path) as conn:
+        init_label_db(conn)
+        row = conn.execute(
+            """
+            SELECT attempts FROM collector_cache
+            WHERE dataset_id = ? AND episode_index = ?
+            """,
+            (dataset_id(dataset_path), episode_index),
+        ).fetchone()
+        attempts = int(row["attempts"] or 0) + 1 if row else 1
+        conn.execute(
+            """
+            INSERT INTO collector_cache (
+                dataset_id, episode_index, dataset_path, episode_name, episode_uuid,
+                collector, raw_path, metadata_path, found, status, attempts,
+                last_error, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(dataset_id, episode_index) DO UPDATE SET
+                dataset_path = excluded.dataset_path,
+                episode_name = excluded.episode_name,
+                episode_uuid = excluded.episode_uuid,
+                collector = excluded.collector,
+                raw_path = excluded.raw_path,
+                metadata_path = excluded.metadata_path,
+                found = excluded.found,
+                status = excluded.status,
+                attempts = excluded.attempts,
+                last_error = excluded.last_error,
+                updated_at = excluded.updated_at
+            """,
+            (
+                dataset_id(dataset_path),
+                episode_index,
+                str(dataset_path),
+                episode.get("episode_name", f"episode_{episode_index:06d}"),
+                episode_uuid,
+                collector,
+                str(source_metadata.get("raw_path") or ""),
+                str(source_metadata.get("metadata_path") or ""),
+                1 if found else 0,
+                status,
+                attempts,
+                error[:500],
+                now,
+            ),
+        )
+        conn.commit()
+    return {
+        "episode_uuid": episode_uuid,
+        "collector": collector,
+        "raw_path": str(source_metadata.get("raw_path") or ""),
+        "metadata_path": str(source_metadata.get("metadata_path") or ""),
+        "found": found,
+        "status": status,
+        "attempts": attempts,
+        "last_error": error[:500],
+        "updated_at": now,
+        "cached": True,
+    }
+
+
+def fetch_and_store_collector_metadata(dataset_path: Path, episode: dict[str, Any]) -> dict[str, Any]:
+    episode_uuid = str(episode.get("episode_uuid") or "").strip().lower()
+    if not episode_uuid:
+        return empty_collector_metadata(episode, status="missing")
+    try:
+        source_metadata = raw_episode_metadata(episode_uuid)
+        if not source_metadata:
+            source_metadata = empty_collector_metadata(episode, status="missing")
+        return upsert_collector_cache(dataset_path, episode, source_metadata)
+    except Exception as exc:
+        return upsert_collector_cache(dataset_path, episode, empty_collector_metadata(episode, status="error"), str(exc))
+
+
+COLLECTOR_WORKERS_STARTED = False
+
+
+def ensure_collector_cache_workers() -> None:
+    global COLLECTOR_WORKERS_STARTED
+    with COLLECTOR_CACHE_LOCK:
+        if COLLECTOR_WORKERS_STARTED:
+            return
+        COLLECTOR_WORKERS_STARTED = True
+    for index in range(COLLECTOR_CACHE_WORKERS):
+        worker = threading.Thread(target=collector_cache_worker, name=f"collector-cache-{index + 1}", daemon=True)
+        worker.start()
+
+
+def schedule_collector_fetch(dataset_path: Path, episode: dict[str, Any], priority: int = 50) -> bool:
+    episode_uuid = str(episode.get("episode_uuid") or "").strip().lower()
+    if not episode_uuid:
+        return False
+    episode_index = int(episode["episode_index"])
+    key = (dataset_id(dataset_path), episode_index)
+    global COLLECTOR_QUEUE_SEQUENCE
+    ensure_collector_cache_workers()
+    with COLLECTOR_CACHE_LOCK:
+        existing_priority = COLLECTOR_CACHE_PENDING.get(key)
+        if existing_priority is not None and existing_priority <= priority:
+            return False
+        COLLECTOR_CACHE_PENDING[key] = priority
+        COLLECTOR_QUEUE_SEQUENCE += 1
+        sequence = COLLECTOR_QUEUE_SEQUENCE
+    COLLECTOR_CACHE_QUEUE.put(
+        (
+            priority,
+            sequence,
+            str(dataset_path),
+            episode.get("episode_name", f"episode_{episode_index:06d}"),
+            episode_index,
+            episode_uuid,
+        )
+    )
+    return True
+
+
+def collector_cache_worker() -> None:
+    while True:
+        priority, _sequence, raw_dataset_path, episode_name, episode_index, episode_uuid = COLLECTOR_CACHE_QUEUE.get()
+        dataset_path = Path(raw_dataset_path)
+        key = (dataset_id(dataset_path), episode_index)
+        try:
+            with COLLECTOR_CACHE_LOCK:
+                current_priority = COLLECTOR_CACHE_PENDING.get(key)
+                if current_priority is None or current_priority != priority:
+                    continue
+                COLLECTOR_CACHE_PENDING.pop(key, None)
+            cached = collector_cache_get(dataset_path, episode_index)
+            if not collector_cache_should_fetch(cached):
+                continue
+            fetch_and_store_collector_metadata(
+                dataset_path,
+                {
+                    "episode_index": episode_index,
+                    "episode_name": episode_name,
+                    "episode_uuid": episode_uuid,
+                },
+            )
+        except Exception:
+            pass
+        finally:
+            COLLECTOR_CACHE_QUEUE.task_done()
+
+
+def schedule_dataset_collector_prefetch(dataset_path: Path, dataset: dict[str, Any]) -> None:
+    fingerprint = tuple(dataset.get("fingerprint") or ())
+    prefetch_key = (dataset_id(dataset_path), fingerprint)
+    with COLLECTOR_CACHE_LOCK:
+        if prefetch_key in COLLECTOR_PREFETCH_KEYS:
+            return
+        COLLECTOR_PREFETCH_KEYS.add(prefetch_key)
+    try:
+        cached_by_index = collector_cache_map(dataset_path)
+    except Exception:
+        cached_by_index = {}
+    for episode in dataset.get("episodes") or []:
+        try:
+            episode_index = int(episode["episode_index"])
+        except (KeyError, TypeError, ValueError):
+            continue
+        cached = cached_by_index.get(episode_index)
+        if collector_cache_should_fetch(cached):
+            schedule_collector_fetch(dataset_path, episode, priority=50)
+
+
+def cached_or_queued_source_metadata(dataset_path: Path, episode: dict[str, Any], priority: int = 5) -> dict[str, Any]:
+    cached = collector_cache_get(dataset_path, int(episode["episode_index"]))
+    if cached and not collector_cache_should_fetch(cached):
+        return cached
+    schedule_collector_fetch(dataset_path, episode, priority=priority)
+    return cached or empty_collector_metadata(episode, status="queued")
+
+
+def source_metadata_for_episode(dataset_path: Path, episode: dict[str, Any] | None, episode_uuid: str = "") -> dict[str, Any]:
+    if episode is None:
+        return raw_episode_metadata(episode_uuid)
+    cached = collector_cache_get(dataset_path, int(episode["episode_index"]))
+    if cached and not collector_cache_should_fetch(cached):
+        return cached
+    return fetch_and_store_collector_metadata(dataset_path, episode)
+
+
+def collector_cache_summary(
+    dataset_path: Path,
+    dataset: dict[str, Any],
+    cached_by_index: dict[int, dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    cached_by_index = cached_by_index if cached_by_index is not None else collector_cache_map(dataset_path)
+    total_with_uuid = sum(1 for episode in dataset.get("episodes") or [] if str(episode.get("episode_uuid") or "").strip())
+    known = sum(1 for payload in cached_by_index.values() if str(payload.get("collector") or "").strip())
+    found = sum(1 for payload in cached_by_index.values() if payload.get("found"))
+    with COLLECTOR_CACHE_LOCK:
+        queued = sum(1 for key in COLLECTOR_CACHE_PENDING if key[0] == dataset_id(dataset_path))
+    return {
+        "total": total_with_uuid,
+        "cached": len(cached_by_index),
+        "found": found,
+        "known": known,
+        "unknown": max(0, total_with_uuid - known),
+        "queued": queued,
+    }
 
 
 def status_counts(dataset: dict[str, Any], store: dict[str, Any], user: str) -> dict[str, int]:
@@ -1243,15 +1574,60 @@ def rank_payload(dataset_path: Path, dataset: dict[str, Any], store: dict[str, A
             str(item.get("user") or ""),
         ),
     )
+    cached_collectors = collector_cache_map(dataset_path)
+    collector_stats: dict[str, dict[str, Any]] = {}
+    for episode in dataset.get("episodes") or []:
+        episode_index = int(episode["episode_index"])
+        label = (store.get("labels") or {}).get(str(episode_index))
+        if not isinstance(label, dict):
+            continue
+        status = review_status(label.get("status"))
+        if status not in RECORDED_STATUS_VALUES:
+            continue
+        cached = cached_collectors.get(episode_index)
+        collector = str((cached or {}).get("collector") or "").strip()
+        if not collector:
+            schedule_collector_fetch(dataset_path, episode, priority=20)
+            collector = "未知采集人"
+        stat = collector_stats.setdefault(
+            collector,
+            {
+                "collector": collector,
+                "marked": 0,
+                "reject": 0,
+                "accept": 0,
+                "pending": 0,
+                "known": collector != "未知采集人",
+            },
+        )
+        stat["marked"] += 1
+        stat[status] += 1
+    collectors = []
+    for stat in collector_stats.values():
+        marked = int(stat.get("marked") or 0)
+        reject = int(stat.get("reject") or 0)
+        stat["reject_rate"] = reject / marked if marked else 0
+        collectors.append(stat)
+    collector_reject_rate = sorted(
+        collectors,
+        key=lambda item: (
+            0 if item.get("known") else 1,
+            -float(item.get("reject_rate") or 0),
+            -int(item.get("marked") or 0),
+            str(item.get("collector") or ""),
+        ),
+    )
     return {
         "dataset_path": str(dataset_path),
         "dataset_id": dataset_id(dataset_path),
         "generated_at": utc_now(),
         "counts": status_counts_from_label_map(dataset, store.get("labels") or {}),
+        "collector_cache": collector_cache_summary(dataset_path, dataset, cached_collectors),
         "users": users,
         "rankings": {
             "marked": by_marked,
             "reject_rate": by_reject_rate,
+            "collector_reject_rate": collector_reject_rate,
         },
     }
 
@@ -1302,12 +1678,14 @@ def full_episode(
         videos.append(item)
     label = label_for_episode(store, user, episode_index)
     locked_by = presence_snapshot(dataset_path, user).get(episode_index, [])
+    source_metadata = cached_or_queued_source_metadata(dataset_path, episode, priority=10)
     return {
         "episode": episode,
         "summary": compact_episode(dataset_path, episode, label, store, locked_by),
         "videos": videos,
         "label": label,
         "active_users": locked_by,
+        "source_metadata": source_metadata,
         "user": user,
     }
 
@@ -1943,7 +2321,7 @@ class QCRequestHandler(BaseHTTPRequestHandler):
                 {
                     "episode_index": episode.get("episode_index") if episode else None,
                     "episode_uuid": episode_uuid,
-                    "source_metadata": raw_episode_metadata(episode_uuid),
+                    "source_metadata": source_metadata_for_episode(dataset_path, episode, episode_uuid),
                 }
             )
             return

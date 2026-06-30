@@ -82,6 +82,8 @@ const state = {
   framesRequest: 0,
   searchRequest: 0,
   lastPlaybackUiAt: 0,
+  rejectOverlayTimer: null,
+  rejectOverlayRequest: 0,
 };
 
 let Three3D = null;
@@ -566,16 +568,23 @@ function playRejectOverlay(collectorName) {
   if (!el.rejectOverlay || !el.rejectCollectorName) {
     return;
   }
+  if (state.rejectOverlayTimer) {
+    window.clearTimeout(state.rejectOverlayTimer);
+    state.rejectOverlayTimer = null;
+  }
   el.rejectCollectorName.textContent = collectorName || "未知采集人";
   el.rejectCollectorName.setAttribute("data-name", collectorName || "未知采集人");
-  el.rejectOverlay.hidden = false;
   el.rejectOverlay.classList.remove("playing");
+  el.rejectOverlay.hidden = true;
+  void el.rejectOverlay.offsetWidth;
+  el.rejectOverlay.hidden = false;
   void el.rejectOverlay.offsetWidth;
   el.rejectOverlay.classList.add("playing");
-  window.setTimeout(() => {
+  state.rejectOverlayTimer = window.setTimeout(() => {
     el.rejectOverlay.classList.remove("playing");
     el.rejectOverlay.hidden = true;
-  }, 1700);
+    state.rejectOverlayTimer = null;
+  }, 1180);
 }
 
 function findHeadVideoIndex(videos = []) {
@@ -2283,7 +2292,12 @@ async function saveLabel(status = state.selectedStatus) {
     updateEpisodeInList(state.currentIndex, result.label, result.episode_label_summary, result.summary);
   }
   if (shouldPlayRejectOverlay) {
-    collectorNameForEpisode(payload.episode_index).then(playRejectOverlay);
+    const overlayRequest = ++state.rejectOverlayRequest;
+    collectorNameForEpisode(payload.episode_index).then((collectorName) => {
+      if (overlayRequest === state.rejectOverlayRequest) {
+        playRejectOverlay(collectorName);
+      }
+    });
   }
   setSaveState("已保存");
 }

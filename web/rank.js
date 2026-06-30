@@ -14,8 +14,10 @@ const el = {};
   "pendingCount",
   "markedUpdatedAt",
   "rejectRateUpdatedAt",
+  "collectorUpdatedAt",
   "markedRankBody",
   "rejectRateRankBody",
+  "collectorRejectRateRankBody",
 ].forEach((id) => {
   el[id] = document.getElementById(id);
 });
@@ -146,16 +148,40 @@ function renderRejectRateRank(items = []) {
   `).join("");
 }
 
+function renderCollectorRejectRateRank(items = []) {
+  if (!items.length) {
+    el.collectorRejectRateRankBody.innerHTML = emptyRow(7, "暂无采集人数据");
+    return;
+  }
+  el.collectorRejectRateRankBody.innerHTML = items.map((item, index) => `
+    <tr>
+      <td>${rankBadge(index)}</td>
+      <td>${escapeHtml(item.collector)}</td>
+      <td><strong>${formatPercent(item.reject_rate)}</strong></td>
+      <td class="status-text reject">${formatNumber(item.reject)}</td>
+      <td>${formatNumber(item.marked)}</td>
+      <td class="status-text accept">${formatNumber(item.accept)}</td>
+      <td class="status-text pending">${formatNumber(item.pending)}</td>
+    </tr>
+  `).join("");
+}
+
 async function loadRank() {
   const data = await requestJson(apiUrl("/api/rank"));
   syncNavigationLinks();
-  el.datasetPath.textContent = `${data.dataset_id} / ${data.dataset_path}`;
+  const collectorCache = data.collector_cache || {};
+  const cacheText = collectorCache.total
+    ? `采集人缓存 ${formatNumber(collectorCache.known)}/${formatNumber(collectorCache.total)}，队列 ${formatNumber(collectorCache.queued)}`
+    : "采集人缓存待建立";
+  el.datasetPath.textContent = `${data.dataset_id} / ${data.dataset_path} / ${cacheText}`;
   const updatedText = `更新 ${formatTime(data.generated_at)}`;
   el.markedUpdatedAt.textContent = updatedText;
   el.rejectRateUpdatedAt.textContent = updatedText;
+  el.collectorUpdatedAt.textContent = updatedText;
   renderMetrics(data.counts || {});
   renderMarkedRank(data.rankings?.marked || []);
   renderRejectRateRank(data.rankings?.reject_rate || []);
+  renderCollectorRejectRateRank(data.rankings?.collector_reject_rate || []);
 }
 
 function scheduleRefresh() {
@@ -163,6 +189,7 @@ function scheduleRefresh() {
     loadRank().catch((error) => {
       el.markedUpdatedAt.textContent = error.message || String(error);
       el.rejectRateUpdatedAt.textContent = error.message || String(error);
+      el.collectorUpdatedAt.textContent = error.message || String(error);
     });
   }, 10000);
 }
@@ -171,6 +198,7 @@ el.refreshButton.addEventListener("click", () => {
   loadRank().catch((error) => {
     el.markedUpdatedAt.textContent = error.message || String(error);
     el.rejectRateUpdatedAt.textContent = error.message || String(error);
+    el.collectorUpdatedAt.textContent = error.message || String(error);
   });
 });
 
@@ -178,4 +206,5 @@ syncNavigationLinks();
 loadRank().then(scheduleRefresh).catch((error) => {
   el.markedUpdatedAt.textContent = error.message || String(error);
   el.rejectRateUpdatedAt.textContent = error.message || String(error);
+  el.collectorUpdatedAt.textContent = error.message || String(error);
 });
