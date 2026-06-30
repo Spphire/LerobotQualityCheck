@@ -162,6 +162,7 @@ function initElements() {
     "rejectOverlay",
     "rejectCollectorName",
     "reviveOverlay",
+    "reviveCollectorName",
     "reviveTotemAsset",
     "hiddenVideos",
   ].forEach((id) => {
@@ -756,12 +757,17 @@ function primeEffectAudio() {
   state.reviveAssetAudio?.load();
 }
 
-function playReviveOverlay() {
+function playReviveOverlay(collectorName) {
   if (!el.reviveOverlay) {
     return;
   }
   stopRejectOverlay();
   stopReviveOverlay();
+  if (el.reviveCollectorName) {
+    const displayName = collectorName || "未知采集人";
+    el.reviveCollectorName.textContent = displayName;
+    el.reviveCollectorName.setAttribute("data-name", displayName);
+  }
   playReviveSound();
   el.reviveOverlay.classList.remove("playing");
   el.reviveOverlay.hidden = true;
@@ -2517,8 +2523,12 @@ async function saveLabel(status = state.selectedStatus) {
       }
     });
   }
-  if (shouldPlayReviveOverlay && labelEffectRequest === state.labelEffectRequest) {
-    playReviveOverlay();
+  if (shouldPlayReviveOverlay) {
+    collectorNameForEpisode(payload.episode_index).then((collectorName) => {
+      if (labelEffectRequest === state.labelEffectRequest) {
+        playReviveOverlay(collectorName);
+      }
+    });
   }
   setSaveState("已保存");
 }
