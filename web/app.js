@@ -86,6 +86,9 @@ const state = {
   lastPlaybackUiAt: 0,
   rejectOverlayTimer: null,
   rejectOverlayRequest: 0,
+  labelEffectRequest: 0,
+  reviveOverlayTimer: null,
+  reviveAudioContext: null,
 };
 
 let Three3D = null;
@@ -154,6 +157,7 @@ function initElements() {
     "modalVideoTime",
     "rejectOverlay",
     "rejectCollectorName",
+    "reviveOverlay",
     "hiddenVideos",
   ].forEach((id) => {
     el[id] = $(id);
@@ -573,14 +577,34 @@ async function collectorNameForEpisode(episodeIndex) {
   }
 }
 
-function playRejectOverlay(collectorName) {
-  if (!el.rejectOverlay || !el.rejectCollectorName) {
-    return;
-  }
+function stopRejectOverlay() {
   if (state.rejectOverlayTimer) {
     window.clearTimeout(state.rejectOverlayTimer);
     state.rejectOverlayTimer = null;
   }
+  if (el.rejectOverlay) {
+    el.rejectOverlay.classList.remove("playing");
+    el.rejectOverlay.hidden = true;
+  }
+}
+
+function stopReviveOverlay() {
+  if (state.reviveOverlayTimer) {
+    window.clearTimeout(state.reviveOverlayTimer);
+    state.reviveOverlayTimer = null;
+  }
+  if (el.reviveOverlay) {
+    el.reviveOverlay.classList.remove("playing");
+    el.reviveOverlay.hidden = true;
+  }
+}
+
+function playRejectOverlay(collectorName) {
+  if (!el.rejectOverlay || !el.rejectCollectorName) {
+    return;
+  }
+  stopReviveOverlay();
+  stopRejectOverlay();
   el.rejectCollectorName.textContent = collectorName || "未知采集人";
   el.rejectCollectorName.setAttribute("data-name", collectorName || "未知采集人");
   el.rejectOverlay.classList.remove("playing");
@@ -594,6 +618,100 @@ function playRejectOverlay(collectorName) {
     el.rejectOverlay.hidden = true;
     state.rejectOverlayTimer = null;
   }, 1180);
+}
+
+function audioContextForEffects() {
+  const AudioContextClass = window.AudioContext || window.webkitAudioContext;
+  if (!AudioContextClass) {
+    return null;
+  }
+  if (!state.reviveAudioContext || state.reviveAudioContext.state === "closed") {
+    state.reviveAudioContext = new AudioContextClass();
+  }
+  if (state.reviveAudioContext.state === "suspended") {
+    state.reviveAudioContext.resume().catch(() => {});
+  }
+  return state.reviveAudioContext;
+}
+
+function playReviveSound() {
+  const context = audioContextForEffects();
+  if (!context) {
+    return;
+  }
+  const now = context.currentTime;
+  const master = context.createGain();
+  master.gain.setValueAtTime(0.0001, now);
+  master.gain.exponentialRampToValueAtTime(0.36, now + 0.02);
+  master.gain.exponentialRampToValueAtTime(0.0001, now + 1.08);
+  master.connect(context.destination);
+
+  const notes = [
+    { frequency: 523.25, start: 0, duration: 0.22 },
+    { frequency: 659.25, start: 0.1, duration: 0.24 },
+    { frequency: 783.99, start: 0.2, duration: 0.3 },
+    { frequency: 1046.5, start: 0.38, duration: 0.42 },
+  ];
+  notes.forEach((note) => {
+    const osc = context.createOscillator();
+    const gain = context.createGain();
+    osc.type = "triangle";
+    osc.frequency.setValueAtTime(note.frequency, now + note.start);
+    osc.frequency.exponentialRampToValueAtTime(note.frequency * 1.12, now + note.start + note.duration);
+    gain.gain.setValueAtTime(0.0001, now + note.start);
+    gain.gain.exponentialRampToValueAtTime(0.18, now + note.start + 0.025);
+    gain.gain.exponentialRampToValueAtTime(0.0001, now + note.start + note.duration);
+    osc.connect(gain);
+    gain.connect(master);
+    osc.start(now + note.start);
+    osc.stop(now + note.start + note.duration + 0.03);
+  });
+
+  const noiseLength = Math.max(1, Math.floor(context.sampleRate * 0.32));
+  const buffer = context.createBuffer(1, noiseLength, context.sampleRate);
+  const channel = buffer.getChannelData(0);
+  for (let i = 0; i < noiseLength; i += 1) {
+    channel[i] = (Math.random() * 2 - 1) * (1 - i / noiseLength);
+  }
+  const noise = context.createBufferSource();
+  const noiseGain = context.createGain();
+  const filter = context.createBiquadFilter();
+  noise.buffer = buffer;
+  filter.type = "bandpass";
+  filter.frequency.setValueAtTime(3400, now + 0.05);
+  filter.Q.setValueAtTime(1.8, now + 0.05);
+  noiseGain.gain.setValueAtTime(0.0001, now + 0.05);
+  noiseGain.gain.exponentialRampToValueAtTime(0.11, now + 0.09);
+  noiseGain.gain.exponentialRampToValueAtTime(0.0001, now + 0.44);
+  noise.connect(filter);
+  filter.connect(noiseGain);
+  noiseGain.connect(master);
+  noise.start(now + 0.05);
+  noise.stop(now + 0.42);
+}
+
+function primeEffectAudio() {
+  audioContextForEffects();
+}
+
+function playReviveOverlay() {
+  if (!el.reviveOverlay) {
+    return;
+  }
+  stopRejectOverlay();
+  stopReviveOverlay();
+  playReviveSound();
+  el.reviveOverlay.classList.remove("playing");
+  el.reviveOverlay.hidden = true;
+  void el.reviveOverlay.offsetWidth;
+  el.reviveOverlay.hidden = false;
+  void el.reviveOverlay.offsetWidth;
+  el.reviveOverlay.classList.add("playing");
+  state.reviveOverlayTimer = window.setTimeout(() => {
+    el.reviveOverlay.classList.remove("playing");
+    el.reviveOverlay.hidden = true;
+    state.reviveOverlayTimer = null;
+  }, 1340);
 }
 
 function findHeadVideoIndex(videos = []) {
@@ -2296,6 +2414,8 @@ async function saveLabel(status = state.selectedStatus) {
   const finalStatus = STATUS_ORDER.includes(status) ? status : "pending";
   const previousStatus = normalizeStatus(state.current?.label?.status || state.current?.summary?.status || state.selectedStatus);
   const shouldPlayRejectOverlay = finalStatus === "reject" && previousStatus !== "reject";
+  const shouldPlayReviveOverlay = finalStatus === "accept" && previousStatus !== "accept";
+  const labelEffectRequest = ++state.labelEffectRequest;
   const payload = {
     episode_index: state.currentIndex,
     status: finalStatus,
@@ -2330,10 +2450,13 @@ async function saveLabel(status = state.selectedStatus) {
   if (shouldPlayRejectOverlay) {
     const overlayRequest = ++state.rejectOverlayRequest;
     collectorNameForEpisode(payload.episode_index).then((collectorName) => {
-      if (overlayRequest === state.rejectOverlayRequest) {
+      if (overlayRequest === state.rejectOverlayRequest && labelEffectRequest === state.labelEffectRequest) {
         playRejectOverlay(collectorName);
       }
     });
+  }
+  if (shouldPlayReviveOverlay && labelEffectRequest === state.labelEffectRequest) {
+    playReviveOverlay();
   }
   setSaveState("已保存");
 }
@@ -2792,6 +2915,9 @@ function bindEvents() {
   el.acceptButton.addEventListener("click", () => runWithErrors(() => saveLabel("accept")));
   el.saveButton?.addEventListener("click", () => runWithErrors(() => saveLabel(state.selectedStatus)));
   el.clearButton?.addEventListener("click", () => runWithErrors(clearLabel));
+
+  window.addEventListener("pointerdown", primeEffectAudio, { once: true, capture: true });
+  window.addEventListener("keydown", primeEffectAudio, { once: true, capture: true });
 
   document.addEventListener("keydown", async (event) => {
     if (event.key === "Escape" && el.videoModal && !el.videoModal.hidden) {

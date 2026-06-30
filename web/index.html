@@ -5,8 +5,8 @@
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>LeRobot 质检平台</title>
     <link rel="icon" href="data:," />
-    <link rel="stylesheet" href="/styles.css?v=20260630-apple-style" />
-    <script type="module" src="/app.js?v=20260630-zup-fixed-camera"></script>
+    <link rel="stylesheet" href="/styles.css?v=20260630-revive-effect" />
+    <script type="module" src="/app.js?v=20260630-revive-effect"></script>
   </head>
   <body>
     <div class="app-shell">
@@ -171,6 +171,35 @@
         <span class="reject-kicker">REJECTED</span>
         <strong id="rejectCollectorName">未知采集人</strong>
       </div>
+    </div>
+
+    <div id="reviveOverlay" class="revive-overlay" aria-hidden="true" hidden>
+      <div class="revive-flash"></div>
+      <div class="revive-ring"></div>
+      <div class="revive-totem" aria-hidden="true">
+        <span class="revive-totem-head"></span>
+        <span class="revive-totem-eye revive-totem-eye-left"></span>
+        <span class="revive-totem-eye revive-totem-eye-right"></span>
+        <span class="revive-totem-body"></span>
+        <span class="revive-totem-arm revive-totem-arm-left"></span>
+        <span class="revive-totem-arm revive-totem-arm-right"></span>
+        <span class="revive-totem-gem"></span>
+      </div>
+      <div class="revive-particles" aria-hidden="true">
+        <span style="--x:-44vw; --y:-34vh; --d:0ms;"></span>
+        <span style="--x:-32vw; --y:24vh; --d:45ms;"></span>
+        <span style="--x:-24vw; --y:-18vh; --d:95ms;"></span>
+        <span style="--x:-14vw; --y:34vh; --d:135ms;"></span>
+        <span style="--x:-6vw; --y:-42vh; --d:15ms;"></span>
+        <span style="--x:8vw; --y:32vh; --d:80ms;"></span>
+        <span style="--x:18vw; --y:-28vh; --d:120ms;"></span>
+        <span style="--x:28vw; --y:20vh; --d:35ms;"></span>
+        <span style="--x:38vw; --y:-14vh; --d:100ms;"></span>
+        <span style="--x:48vw; --y:36vh; --d:160ms;"></span>
+        <span style="--x:-50vw; --y:4vh; --d:70ms;"></span>
+        <span style="--x:52vw; --y:-38vh; --d:55ms;"></span>
+      </div>
+      <strong class="revive-title">ACCEPTED</strong>
     </div>
 
     <div id="hiddenVideos" hidden></div>
