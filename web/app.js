@@ -1016,6 +1016,26 @@ function compactPoints(points = []) {
   return points.filter(validPoint);
 }
 
+function trajectoryAxisRanges(trajectory) {
+  const points = [
+    ...compactPoints(trajectory.left?.points || []),
+    ...compactPoints(trajectory.right?.points || []),
+  ];
+  const fallback = [-1, 1];
+  if (!points.length) {
+    return { x: fallback, y: fallback, z: fallback };
+  }
+  const values = [0, 1, 2].map((axis) => points.map((point) => point[axis]));
+  const ranges = values.map((axisValues) => {
+    const min = Math.min(...axisValues);
+    const max = Math.max(...axisValues);
+    const span = Math.max(max - min, 0.08);
+    const pad = Math.max(span * 0.08, 0.04);
+    return [min - pad, max + pad];
+  });
+  return { x: ranges[0], y: ranges[1], z: ranges[2] };
+}
+
 function trajectoryTrace(name, points = [], color) {
   const valid = compactPoints(points);
   return {
@@ -1369,6 +1389,7 @@ function renderTrajectory3D(trajectory) {
   state.lastTrajectoryHighlightAt = 0;
   state.trajectoryCamera = cloneTrajectoryCamera(cameraFromHeadMinusZ(trajectory));
   state.trajectoryCameraRevision = 0;
+  const axisRanges = trajectoryAxisRanges(trajectory);
   const axisStyle = {
     showbackground: true,
     backgroundcolor: "#0b0f14",
@@ -1387,9 +1408,9 @@ function renderTrajectory3D(trajectory) {
     scene: {
       uirevision: `episode-${state.currentIndex ?? "none"}`,
       aspectmode: "data",
-      xaxis: { ...axisStyle, title: "x" },
-      yaxis: { ...axisStyle, title: "y ↑" },
-      zaxis: { ...axisStyle, title: "z" },
+      xaxis: { ...axisStyle, title: "x", range: axisRanges.x, autorange: false },
+      yaxis: { ...axisStyle, title: "y ↑", range: axisRanges.y, autorange: false },
+      zaxis: { ...axisStyle, title: "z", range: axisRanges.z, autorange: false },
       camera: state.trajectoryCamera,
     },
   };
@@ -2019,7 +2040,7 @@ function updateModalVideoUI(ratio = modalVideoRatio()) {
   }
 }
 
-function setModalVideoProgress(ratio, syncMain = true, keepPaused = false) {
+function setModalVideoProgress(ratio, syncMain = false, keepPaused = false) {
   const normalized = Math.max(0, Math.min(1, Number.isFinite(ratio) ? ratio : 0));
   if (el.modalVideo && Number.isFinite(el.modalVideo.duration) && el.modalVideo.duration > 0) {
     el.modalVideo.currentTime = normalized * el.modalVideo.duration;
@@ -2051,8 +2072,6 @@ function openWristVideoModal(side, ratio) {
     setSaveState(`${side === "left" ? "左" : "右"}腕部视频不存在`, true);
     return;
   }
-  pauseAll();
-  setAllVideoProgress(ratio);
   state.modalVideoSide = side;
   const sideLabel = side === "left" ? "左腕" : "右腕";
   el.modalVideoTitle.textContent = `${sideLabel}视频 · ${item.video.camera || item.video.key || ""}`;
@@ -2234,9 +2253,6 @@ function bindEvents() {
   el.modalVideo?.addEventListener("timeupdate", () => {
     const ratio = modalVideoRatio();
     updateModalVideoUI(ratio);
-    if (!state.isDraggingModalProgress) {
-      setAllVideoProgress(ratio);
-    }
   });
   el.modalVideo?.addEventListener("play", () => updateModalVideoUI());
   el.modalVideo?.addEventListener("pause", () => updateModalVideoUI());
@@ -2246,11 +2262,11 @@ function bindEvents() {
   });
   el.modalVideoProgress?.addEventListener("input", () => {
     state.isDraggingModalProgress = true;
-    setModalVideoProgress(Number(el.modalVideoProgress.value) / 1000, true, true);
+    setModalVideoProgress(Number(el.modalVideoProgress.value) / 1000, false, true);
   });
   el.modalVideoProgress?.addEventListener("change", () => {
     state.isDraggingModalProgress = false;
-    setModalVideoProgress(Number(el.modalVideoProgress.value) / 1000, true, true);
+    setModalVideoProgress(Number(el.modalVideoProgress.value) / 1000, false, true);
   });
   window.addEventListener("pointerup", () => {
     if (state.isDraggingProgress && el.videoProgress) {
@@ -2259,7 +2275,7 @@ function bindEvents() {
     }
     if (state.isDraggingModalProgress && el.modalVideoProgress) {
       state.isDraggingModalProgress = false;
-      setModalVideoProgress(Number(el.modalVideoProgress.value) / 1000, true, true);
+      setModalVideoProgress(Number(el.modalVideoProgress.value) / 1000, false, true);
     }
   });
 
