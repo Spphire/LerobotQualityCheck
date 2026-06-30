@@ -148,6 +148,8 @@ function initElements() {
     "modalPlayPauseButton",
     "modalVideoProgress",
     "modalVideoTime",
+    "rejectOverlay",
+    "rejectCollectorName",
     "hiddenVideos",
   ].forEach((id) => {
     el[id] = $(id);
@@ -548,6 +550,31 @@ function stopHiddenVideos() {
   state.hiddenVideos = [];
   state.headVideoIndex = 0;
   updateProgressUI(0);
+}
+
+async function collectorNameForEpisode(episodeIndex) {
+  try {
+    const data = await requestJson(apiUrl("/api/source_metadata", { episode_index: episodeIndex }));
+    return data.source_metadata?.collector || "未知采集人";
+  } catch (error) {
+    console.debug("collector lookup failed", error);
+    return "未知采集人";
+  }
+}
+
+function playRejectOverlay(collectorName) {
+  if (!el.rejectOverlay || !el.rejectCollectorName) {
+    return;
+  }
+  el.rejectCollectorName.textContent = collectorName || "未知采集人";
+  el.rejectOverlay.hidden = false;
+  el.rejectOverlay.classList.remove("playing");
+  void el.rejectOverlay.offsetWidth;
+  el.rejectOverlay.classList.add("playing");
+  window.setTimeout(() => {
+    el.rejectOverlay.classList.remove("playing");
+    el.rejectOverlay.hidden = true;
+  }, 1700);
 }
 
 function findHeadVideoIndex(videos = []) {
@@ -2221,6 +2248,8 @@ async function saveLabel(status = state.selectedStatus) {
     return;
   }
   const finalStatus = STATUS_ORDER.includes(status) ? status : "pending";
+  const previousStatus = normalizeStatus(state.current?.label?.status || state.current?.summary?.status || state.selectedStatus);
+  const shouldPlayRejectOverlay = finalStatus === "reject" && previousStatus !== "reject";
   const payload = {
     episode_index: state.currentIndex,
     status: finalStatus,
@@ -2251,6 +2280,9 @@ async function saveLabel(status = state.selectedStatus) {
     await loadEpisodes({ keepSelection: true });
   } else {
     updateEpisodeInList(state.currentIndex, result.label, result.episode_label_summary, result.summary);
+  }
+  if (shouldPlayRejectOverlay) {
+    collectorNameForEpisode(payload.episode_index).then(playRejectOverlay);
   }
   setSaveState("已保存");
 }
