@@ -1009,9 +1009,12 @@ canvas {
 }
 
 .reject-overlay.playing .reject-card {
+  position: relative;
   display: grid;
   gap: 8px;
   min-width: min(460px, 76vw);
+  min-height: 128px;
+  place-items: center;
   padding: 24px 30px;
   border: 1px solid rgba(255, 255, 255, 0.58);
   border-radius: 8px;
@@ -1024,6 +1027,10 @@ canvas {
 }
 
 .reject-kicker {
+  position: absolute;
+  top: 18px;
+  left: 0;
+  width: 100%;
   color: rgba(255, 214, 10, 0.9);
   font-size: 12px;
   font-weight: 800;
@@ -1031,9 +1038,42 @@ canvas {
 }
 
 #rejectCollectorName {
+  position: relative;
+  display: block;
   overflow-wrap: anywhere;
+  color: transparent;
   font-size: clamp(28px, 4vw, 54px);
   line-height: 1.05;
+}
+
+#rejectCollectorName::before,
+#rejectCollectorName::after {
+  content: attr(data-name);
+  position: absolute;
+  top: 0;
+  left: 50%;
+  width: max-content;
+  max-width: 76vw;
+  color: #fff;
+  text-shadow: 0 2px 18px rgba(255, 255, 255, 0.22);
+  transform: translateX(-50%);
+  overflow: hidden;
+}
+
+#rejectCollectorName::before {
+  clip-path: polygon(0 0, 100% 0, 57% 100%, 0 100%);
+}
+
+#rejectCollectorName::after {
+  clip-path: polygon(100% 0, 57% 100%, 100% 100%);
+}
+
+.reject-overlay.playing #rejectCollectorName::before {
+  animation: reject-name-left 1500ms cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+
+.reject-overlay.playing #rejectCollectorName::after {
+  animation: reject-name-right 1500ms cubic-bezier(0.16, 1, 0.3, 1) both;
 }
 
 @keyframes reject-slash-sweep {
@@ -1051,6 +1091,38 @@ canvas {
   100% {
     opacity: 0;
     transform: rotate(-19deg) translateX(112vw) scaleX(0.72);
+  }
+}
+
+@keyframes reject-name-left {
+  0%,
+  34% {
+    opacity: 1;
+    transform: translateX(-50%) translate(0, 0) rotate(0deg);
+  }
+  58% {
+    opacity: 1;
+    transform: translateX(-50%) translate(-28px, 8px) rotate(-5deg);
+  }
+  100% {
+    opacity: 0;
+    transform: translateX(-50%) translate(-76px, 48px) rotate(-11deg);
+  }
+}
+
+@keyframes reject-name-right {
+  0%,
+  34% {
+    opacity: 1;
+    transform: translateX(-50%) translate(0, 0) rotate(0deg);
+  }
+  58% {
+    opacity: 1;
+    transform: translateX(-50%) translate(30px, -2px) rotate(4deg);
+  }
+  100% {
+    opacity: 0;
+    transform: translateX(-50%) translate(82px, 38px) rotate(10deg);
   }
 }
 

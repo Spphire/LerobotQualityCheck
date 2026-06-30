@@ -567,6 +567,7 @@ function playRejectOverlay(collectorName) {
     return;
   }
   el.rejectCollectorName.textContent = collectorName || "未知采集人";
+  el.rejectCollectorName.setAttribute("data-name", collectorName || "未知采集人");
   el.rejectOverlay.hidden = false;
   el.rejectOverlay.classList.remove("playing");
   void el.rejectOverlay.offsetWidth;
