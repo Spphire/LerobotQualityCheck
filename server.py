@@ -1797,12 +1797,46 @@ def trajectory_metadata_for_episode(dataset: dict[str, Any], episode: dict[str, 
     info = dataset.get("info") or {}
     device_type = string_value(episode.get("device_type") or info.get("device_type"))
     collection_mode = string_value(episode.get("collection_mode") or info.get("collection_mode"))
+    is_teleop = "teleoperation" in device_type.lower() or "teleoperation" in collection_mode.lower()
 
     return {
         "device_type": device_type,
         "collection_mode": collection_mode,
+        "transform": "teleop_rx_minus_90" if is_teleop else "identity",
         "world_up_axis": "y",
     }
+
+
+def teleop_point_to_robopocket(point: list[float | None]) -> list[float | None]:
+    if len(point) < 3 or any(value is None for value in point[:3]):
+        return point
+    x, y, z = point[:3]
+    return [x, z, -y]
+
+
+def quat_multiply(a: list[float], b: list[float]) -> list[float]:
+    aw, ax, ay, az = a
+    bw, bx, by, bz = b
+    return [
+        aw * bw - ax * bx - ay * by - az * bz,
+        aw * bx + ax * bw + ay * bz - az * by,
+        aw * by - ax * bz + ay * bw + az * bx,
+        aw * bz + ax * by - ay * bx + az * bw,
+    ]
+
+
+def normalize_quat_values(quat: list[float]) -> list[float]:
+    length = math.sqrt(sum(value * value for value in quat))
+    if not math.isfinite(length) or length <= 1e-9:
+        return quat
+    return [value / length for value in quat]
+
+
+def teleop_quat_to_robopocket(quat: list[float | None]) -> list[float | None]:
+    if len(quat) < 4 or any(value is None for value in quat[:4]):
+        return quat
+    rotation = [math.sqrt(0.5), -math.sqrt(0.5), 0.0, 0.0]
+    return normalize_quat_values(quat_multiply(rotation, [float(value) for value in quat[:4]]))
 
 
 def update_ranges(ranges: dict[str, list[float | None]], point: list[float | None]) -> None:
@@ -1876,6 +1910,7 @@ def load_trajectory(dataset_path: Path, dataset: dict[str, Any], episode_index: 
     masks = {"left": [], "right": [], "ego": []}
     ranges: dict[str, list[float | None]] = {"x": [None, None], "y": [None, None], "z": [None, None]}
     trajectory_metadata = trajectory_metadata_for_episode(dataset, episode)
+    transform_teleop = trajectory_metadata.get("transform") == "teleop_rx_minus_90"
 
     for row_index, row in enumerate(rows[::stride]):
         state = row.get("observation.state")
@@ -1898,6 +1933,14 @@ def load_trajectory(dataset_path: Path, dataset: dict[str, Any], episode_index: 
         if ego[0] is None:
             ego = point_from_pose(row.get("observation.extra.ego.raw_pose"))
             ego_quat = quat_from_pose(row.get("observation.extra.ego.raw_pose"))
+
+        if transform_teleop:
+            left = teleop_point_to_robopocket(left)
+            right = teleop_point_to_robopocket(right)
+            ego = teleop_point_to_robopocket(ego)
+            left_quat = teleop_quat_to_robopocket(left_quat)
+            right_quat = teleop_quat_to_robopocket(right_quat)
+            ego_quat = teleop_quat_to_robopocket(ego_quat)
 
         left_points.append(left)
         right_points.append(right)
