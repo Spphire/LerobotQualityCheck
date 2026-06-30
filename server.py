@@ -990,6 +990,10 @@ def collector_from_metadata(metadata: dict[str, Any]) -> str:
         ("metadata", "operator"),
         ("metadata", "created_by"),
         ("metadata", "user"),
+        ("extra", "user_name"),
+        ("extra", "user_id"),
+        ("extra", "collector"),
+        ("extra", "operator"),
     ]
     for path in candidates:
         value = string_value(nested_lookup(metadata, path))
