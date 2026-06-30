@@ -1014,22 +1014,33 @@ if not isinstance(payload, dict):
 print(json.dumps(payload, ensure_ascii=False))
 """
     try:
-        proc = subprocess.run(
+        proc = subprocess.Popen(
             [sys.executable, "-c", code, str(metadata_path)],
             stdout=subprocess.PIPE,
             stderr=subprocess.DEVNULL,
             text=True,
             encoding="utf-8",
             errors="replace",
-            timeout=RAW_METADATA_TIMEOUT_SECONDS,
-            check=False,
+            start_new_session=True,
         )
-    except (OSError, subprocess.TimeoutExpired):
+    except OSError:
         return None
+    deadline = time.monotonic() + RAW_METADATA_TIMEOUT_SECONDS
+    while proc.poll() is None and time.monotonic() < deadline:
+        time.sleep(0.02)
+    if proc.poll() is None:
+        try:
+            proc.kill()
+        except OSError:
+            pass
+        if proc.stdout:
+            proc.stdout.close()
+        return None
+    stdout = proc.stdout.read() if proc.stdout else ""
     if proc.returncode != 0:
         return None
     try:
-        payload = json.loads(proc.stdout or "{}")
+        payload = json.loads(stdout or "{}")
     except json.JSONDecodeError:
         return None
     return payload if isinstance(payload, dict) else {}
@@ -1287,14 +1298,12 @@ def full_episode(
         videos.append(item)
     label = label_for_episode(store, user, episode_index)
     locked_by = presence_snapshot(dataset_path, user).get(episode_index, [])
-    source_metadata = raw_episode_metadata(episode.get("episode_uuid", ""))
     return {
         "episode": episode,
         "summary": compact_episode(dataset_path, episode, label, store, locked_by),
         "videos": videos,
         "label": label,
         "active_users": locked_by,
-        "source_metadata": source_metadata,
         "user": user,
     }
 
@@ -1908,6 +1917,31 @@ class QCRequestHandler(BaseHTTPRequestHandler):
         if method == "GET" and parsed.path == "/api/admin/episode":
             episode_index = parse_int(query_value(query, "episode_index"), 0, 0, 10000000)
             self.send_json(full_episode(dataset_path, dataset, episode_index, store, user))
+            return
+
+        if method == "GET" and parsed.path == "/api/source_metadata":
+            episode_uuid = (query_value(query, "episode_uuid", "") or "").strip()
+            episode_index_value = query_value(query, "episode_index")
+            episode: dict[str, Any] | None = None
+            if episode_uuid:
+                for candidate in dataset["episodes"]:
+                    if str(candidate.get("episode_uuid", "")).lower() == episode_uuid.lower():
+                        episode = candidate
+                        break
+            elif episode_index_value is not None:
+                episode_index = parse_int(episode_index_value, 0, 0, 10000000)
+                episode = dataset["episode_by_index"].get(episode_index)
+            if episode is not None:
+                episode_uuid = str(episode.get("episode_uuid", "") or episode_uuid)
+            if not episode_uuid:
+                raise AppError("episode_index or episode_uuid is required", 400)
+            self.send_json(
+                {
+                    "episode_index": episode.get("episode_index") if episode else None,
+                    "episode_uuid": episode_uuid,
+                    "source_metadata": raw_episode_metadata(episode_uuid),
+                }
+            )
             return
 
         if method == "GET" and parsed.path == "/api/episode_state":

@@ -402,13 +402,10 @@ function renderHeader(current) {
   }
   el.episodeTitle.textContent = episode.episode_name || episodeName(episode.episode_index);
   const task = episode.task_description || episode.task_annotation || (episode.tasks || []).join(" / ");
-  const source = current.source_metadata || {};
   const bits = [
     `index ${episode.episode_index}`,
     `${formatNumber(episode.length)} frames`,
     `${current.videos.length} videos`,
-    source.collector ? `collector ${source.collector}` : "",
-    source.raw_path ? `source ${source.raw_path}` : "",
     `user ${state.user}`,
     task,
   ].filter(Boolean);
