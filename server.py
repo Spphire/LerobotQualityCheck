@@ -777,16 +777,27 @@ def review_status(status: Any) -> str:
 def per_episode_label_summary(store: dict[str, Any], episode_index: int) -> dict[str, Any]:
     statuses = {"reject": 0, "pending": 0, "accept": 0}
     users = []
+    effective_label = None
     label = (store.get("labels") or {}).get(str(episode_index))
     if label:
         status = review_status(label.get("status"))
         if status in RECORDED_STATUS_VALUES:
             statuses[status] += 1
-            users.append(str(label.get("user") or label.get("annotator") or "default"))
+            user = str(label.get("user") or label.get("annotator") or "default")
+            users.append(user)
+            if status in DECISION_STATUS_VALUES:
+                effective_label = {
+                    "episode_index": episode_index,
+                    "status": status,
+                    "user": user,
+                    "annotator": str(label.get("annotator") or user),
+                    "updated_at": str(label.get("updated_at") or ""),
+                }
     return {
         "label_count": sum(statuses.values()),
         "statuses": statuses,
         "users": users,
+        "effective_label": effective_label,
     }
 
 
@@ -1706,6 +1717,7 @@ def compact_episode(
         "label_count": label_summary["label_count"],
         "label_users": label_summary["users"],
         "all_statuses": label_summary["statuses"],
+        "effective_label": label_summary["effective_label"],
         "locked_by": locked_by or [],
         "video_count": episode.get("video_count", 0),
         "data_rel_path": episode.get("data_rel_path"),

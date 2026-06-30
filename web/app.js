@@ -371,6 +371,13 @@ function renderEpisodeList() {
     const lockedBy = Array.isArray(episode.locked_by) ? episode.locked_by.filter(Boolean) : [];
     const lockText = lockedBy.length ? (lockedBy.length === 1 ? `锁 ${lockedBy[0]}` : `锁 ${lockedBy.length}`) : "";
     const lockTitle = lockedBy.length ? `正在查看: ${lockedBy.join(", ")}` : "";
+    const effectiveLabel = episode.effective_label || {};
+    const effectiveStatus = statusClass(effectiveLabel.status);
+    const effectiveUser = effectiveLabel.user || effectiveLabel.annotator || "";
+    const effectiveText = effectiveUser && (effectiveStatus === "reject" || effectiveStatus === "accept")
+      ? `${statusLabel(effectiveStatus)} ${effectiveUser}`
+      : "";
+    const effectiveTitle = effectiveText ? `当前标注: ${statusLabel(effectiveStatus)} / ${effectiveUser}` : "";
     return `
       <button class="episode-item ${active}" data-index="${episode.episode_index}" type="button">
         <span class="episode-main">
@@ -380,6 +387,7 @@ function renderEpisodeList() {
         </span>
         <span class="status-stack">
           <span class="status-pill ${status}">${escapeHtml(statusLabel(status))}</span>
+          ${effectiveText ? `<span class="effective-label ${effectiveStatus}" title="${escapeHtml(effectiveTitle)}">${escapeHtml(effectiveText)}</span>` : ""}
           ${lockText ? `<span class="lock-pill" title="${escapeHtml(lockTitle)}">${escapeHtml(lockText)}</span>` : ""}
           <span class="label-count">${escapeHtml(labelCount)}</span>
         </span>
@@ -2017,6 +2025,11 @@ function updateEpisodeInList(episodeIndex, label, episodeLabelSummary, episodeSu
     if (episode.episode_index !== episodeIndex) {
       return episode;
     }
+    const nextEffectiveLabel = episodeSummary && Object.prototype.hasOwnProperty.call(episodeSummary, "effective_label")
+      ? episodeSummary.effective_label
+      : episodeLabelSummary && Object.prototype.hasOwnProperty.call(episodeLabelSummary, "effective_label")
+        ? episodeLabelSummary.effective_label
+        : episode.effective_label;
     return {
       ...episode,
       ...(episodeSummary || {}),
@@ -2026,6 +2039,7 @@ function updateEpisodeInList(episodeIndex, label, episodeLabelSummary, episodeSu
       label_count: episodeLabelSummary?.label_count ?? episode.label_count,
       label_users: episodeLabelSummary?.users ?? episode.label_users,
       all_statuses: episodeLabelSummary?.statuses ?? episode.all_statuses,
+      effective_label: nextEffectiveLabel,
       locked_by: episodeSummary?.locked_by ?? episode.locked_by,
     };
   });
