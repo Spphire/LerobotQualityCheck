@@ -1121,12 +1121,12 @@ function trajectoryIndexAtFrame(frames = [], frame = 0, fallbackLength = 0) {
 
 function trajectorySample(points = [], frames = [], frame = 0) {
   if (!points.length) {
-    return { point: null, trail: [] };
+    return { point: null, trail: [], index: -1 };
   }
   const rawIndex = trajectoryIndexAtFrame(frames, frame, points.length);
   const index = nearestValidPointIndex(points, rawIndex);
   if (index < 0) {
-    return { point: null, trail: [] };
+    return { point: null, trail: [], index: -1 };
   }
   const start = Math.max(0, index - 14);
   const trail = [];
@@ -1135,7 +1135,7 @@ function trajectorySample(points = [], frames = [], frame = 0) {
       trail.push(points[i]);
     }
   }
-  return { point: points[index], trail };
+  return { point: points[index], trail, index };
 }
 
 function validQuat(quat) {
@@ -1264,42 +1264,35 @@ function pushSegment(segments, origin, endpoint) {
   segments.z.push(origin[2], endpoint[2], null);
 }
 
-function poseAxesTraces(points = [], quaternions = []) {
-  const available = points
-    .map((point, index) => ({ point, quat: quaternions[index], index }))
-    .filter((item) => validPoint(item.point) && validQuat(item.quat));
-  if (!available.length) {
-    return [];
-  }
-  const count = Math.min(7, available.length);
-  const picked = new Set();
-  for (let i = 0; i < count; i += 1) {
-    picked.add(Math.round((i * (available.length - 1)) / Math.max(1, count - 1)));
-  }
-  const axisLength = 0.055;
+function currentPoseAxesSegments(point, quat) {
   const xSegments = { x: [], y: [], z: [] };
   const ySegments = { x: [], y: [], z: [] };
   const zSegments = { x: [], y: [], z: [] };
-  [...picked].forEach((pickedIndex) => {
-    const { point, quat } = available[pickedIndex];
-    [
-      [[axisLength, 0, 0], xSegments],
-      [[0, axisLength, 0], ySegments],
-      [[0, 0, axisLength], zSegments],
-    ].forEach(([axis, segments]) => {
-      const rotated = rotateVectorByQuat(axis, quat);
-      const endpoint = [
-        point[0] + rotated[0],
-        point[1] + rotated[1],
-        point[2] + rotated[2],
-      ];
-      pushSegment(segments, point, endpoint);
-    });
+  if (!validPoint(point) || !validQuat(quat)) {
+    return [xSegments, ySegments, zSegments];
+  }
+  const axisLength = 0.0275;
+  [
+    [[axisLength, 0, 0], xSegments],
+    [[0, axisLength, 0], ySegments],
+    [[0, 0, axisLength], zSegments],
+  ].forEach(([axis, segments]) => {
+    const rotated = rotateVectorByQuat(axis, quat);
+    const endpoint = [
+      point[0] + rotated[0],
+      point[1] + rotated[1],
+      point[2] + rotated[2],
+    ];
+    pushSegment(segments, point, endpoint);
   });
+  return [xSegments, ySegments, zSegments];
+}
+
+function currentPoseAxesTraces(prefix) {
   return [
-    segmentTrace("local x", xSegments, "#ff4d4d"),
-    segmentTrace("local y", ySegments, "#35d06f"),
-    segmentTrace("local z", zSegments, "#38bdf8"),
+    segmentTrace(`${prefix} local x`, { x: [], y: [], z: [] }, "#ff4d4d"),
+    segmentTrace(`${prefix} local y`, { x: [], y: [], z: [] }, "#35d06f"),
+    segmentTrace(`${prefix} local z`, { x: [], y: [], z: [] }, "#38bdf8"),
   ];
 }
 
@@ -1361,8 +1354,6 @@ function renderTrajectory3D(trajectory) {
     trajectoryTrace("右手", trajectory.right?.points || [], "#ef4444"),
     endpointTrace("左手", trajectory.left?.points || [], "#22c55e"),
     endpointTrace("右手", trajectory.right?.points || [], "#ef4444"),
-    ...poseAxesTraces(trajectory.left?.points || [], trajectory.left?.quaternions || []),
-    ...poseAxesTraces(trajectory.right?.points || [], trajectory.right?.quaternions || []),
   ].filter(Boolean);
   const highlightStart = traces.length;
   traces.push(
@@ -1370,8 +1361,10 @@ function renderTrajectory3D(trajectory) {
     trajectoryNowTrace("left current", "#22c55e"),
     trajectoryFlowTrace("right current flow", "rgba(252, 165, 165, 0.95)"),
     trajectoryNowTrace("right current", "#ef4444"),
+    ...currentPoseAxesTraces("left current"),
+    ...currentPoseAxesTraces("right current"),
   );
-  state.trajectoryHighlightTraceIndexes = [highlightStart, highlightStart + 1, highlightStart + 2, highlightStart + 3];
+  state.trajectoryHighlightTraceIndexes = Array.from({ length: 10 }, (_, index) => highlightStart + index);
   state.lastTrajectoryHighlightFrame = null;
   state.lastTrajectoryHighlightAt = 0;
   state.trajectoryCamera = cloneTrajectoryCamera(cameraFromHeadMinusZ(trajectory));
@@ -1437,19 +1430,39 @@ function updateTrajectoryHighlight(force = false) {
   const frames = state.trajectory.frames || [];
   const left = trajectorySample(state.trajectory.left?.points || [], frames, frame);
   const right = trajectorySample(state.trajectory.right?.points || [], frames, frame);
-  const trailX = (sample) => sample.trail.map((point) => point[0]);
-  const trailY = (sample) => sample.trail.map((point) => point[1]);
-  const trailZ = (sample) => sample.trail.map((point) => point[2]);
-  const pointX = (sample) => (sample.point ? [sample.point[0]] : []);
-  const pointY = (sample) => (sample.point ? [sample.point[1]] : []);
-  const pointZ = (sample) => (sample.point ? [sample.point[2]] : []);
+  const leftAxes = currentPoseAxesSegments(left.point, state.trajectory.left?.quaternions?.[left.index]);
+  const rightAxes = currentPoseAxesSegments(right.point, state.trajectory.right?.quaternions?.[right.index]);
+  const dynamicSegments = [
+    {
+      x: left.trail.map((point) => point[0]),
+      y: left.trail.map((point) => point[1]),
+      z: left.trail.map((point) => point[2]),
+    },
+    {
+      x: left.point ? [left.point[0]] : [],
+      y: left.point ? [left.point[1]] : [],
+      z: left.point ? [left.point[2]] : [],
+    },
+    {
+      x: right.trail.map((point) => point[0]),
+      y: right.trail.map((point) => point[1]),
+      z: right.trail.map((point) => point[2]),
+    },
+    {
+      x: right.point ? [right.point[0]] : [],
+      y: right.point ? [right.point[1]] : [],
+      z: right.point ? [right.point[2]] : [],
+    },
+    ...leftAxes,
+    ...rightAxes,
+  ];
 
   const cameraRevision = state.trajectoryCameraRevision;
   const cameraBeforeUpdate = cloneTrajectoryCamera(state.trajectoryCamera);
   Plotly3D.restyle(el.trajectoryCanvas, {
-    x: [trailX(left), pointX(left), trailX(right), pointX(right)],
-    y: [trailY(left), pointY(left), trailY(right), pointY(right)],
-    z: [trailZ(left), pointZ(left), trailZ(right), pointZ(right)],
+    x: dynamicSegments.map((segment) => segment.x),
+    y: dynamicSegments.map((segment) => segment.y),
+    z: dynamicSegments.map((segment) => segment.z),
   }, state.trajectoryHighlightTraceIndexes)
     .then(() => {
       if (state.isInteractingTrajectory) {
