@@ -1793,6 +1793,48 @@ def quat_from_pose(value: Any) -> list[float | None]:
     return [None, None, None, None]
 
 
+def normalize_world_up_axis(value: Any) -> str | None:
+    text = string_value(value).strip().lower()
+    if not text:
+        return None
+    if text in {"x", "+x", "x_up", "x-up", "xup"}:
+        return "x"
+    if text in {"y", "+y", "y_up", "y-up", "yup"}:
+        return "y"
+    if text in {"z", "+z", "z_up", "z-up", "zup"}:
+        return "z"
+    return None
+
+
+def trajectory_metadata_for_episode(dataset: dict[str, Any], episode: dict[str, Any]) -> dict[str, Any]:
+    info = dataset.get("info") or {}
+    device_type = string_value(episode.get("device_type") or info.get("device_type"))
+    collection_mode = string_value(episode.get("collection_mode") or info.get("collection_mode"))
+
+    explicit_axis = (
+        normalize_world_up_axis(episode.get("world_up_axis"))
+        or normalize_world_up_axis(episode.get("up_axis"))
+        or normalize_world_up_axis(episode.get("gravity_axis"))
+        or normalize_world_up_axis(info.get("world_up_axis"))
+        or normalize_world_up_axis(info.get("up_axis"))
+        or normalize_world_up_axis(info.get("gravity_axis"))
+    )
+    if explicit_axis:
+        world_up_axis = explicit_axis
+    else:
+        device_key = device_type.lower()
+        if "teleoperation_r1" in device_key or device_key == "r1":
+            world_up_axis = "z"
+        else:
+            world_up_axis = "y"
+
+    return {
+        "device_type": device_type,
+        "collection_mode": collection_mode,
+        "world_up_axis": world_up_axis,
+    }
+
+
 def update_ranges(ranges: dict[str, list[float | None]], point: list[float | None]) -> None:
     for axis, value in zip(("x", "y", "z"), point):
         if value is None:
@@ -1863,6 +1905,7 @@ def load_trajectory(dataset_path: Path, dataset: dict[str, Any], episode_index: 
     right_gripper: list[float | None] = []
     masks = {"left": [], "right": [], "ego": []}
     ranges: dict[str, list[float | None]] = {"x": [None, None], "y": [None, None], "z": [None, None]}
+    trajectory_metadata = trajectory_metadata_for_episode(dataset, episode)
 
     for row_index, row in enumerate(rows[::stride]):
         state = row.get("observation.state")
@@ -1915,6 +1958,9 @@ def load_trajectory(dataset_path: Path, dataset: dict[str, Any], episode_index: 
         "source": rel_path,
         "total_rows": total_rows,
         "stride": stride,
+        "device_type": trajectory_metadata["device_type"],
+        "world_up_axis": trajectory_metadata["world_up_axis"],
+        "metadata": trajectory_metadata,
         "frames": frames,
         "timestamps": timestamps,
         "left": {"points": left_points, "quaternions": left_quats, "gripper": left_gripper},

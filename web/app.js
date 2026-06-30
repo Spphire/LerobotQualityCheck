@@ -1091,6 +1091,36 @@ function trajectoryAxisRanges(trajectory) {
   return { x: ranges[0], y: ranges[1], z: ranges[2] };
 }
 
+function trajectoryWorldUpAxis(trajectory) {
+  const rawAxis = String(trajectory?.world_up_axis || trajectory?.metadata?.world_up_axis || "y").toLowerCase();
+  return ["x", "y", "z"].includes(rawAxis) ? rawAxis : "y";
+}
+
+function axisVectorObject(axis) {
+  if (axis === "x") {
+    return { x: 1, y: 0, z: 0 };
+  }
+  if (axis === "z") {
+    return { x: 0, y: 0, z: 1 };
+  }
+  return { x: 0, y: 1, z: 0 };
+}
+
+function setVectorByAxis(vector, axis) {
+  const up = axisVectorObject(axis);
+  vector.set(up.x, up.y, up.z);
+}
+
+function defaultCameraEyeForUpAxis(axis) {
+  if (axis === "x") {
+    return { x: 0.85, y: 1.35, z: 1.35 };
+  }
+  if (axis === "z") {
+    return { x: 1.35, y: 1.35, z: 0.85 };
+  }
+  return { x: 1.35, y: 0.85, z: 1.35 };
+}
+
 function trajectoryTrace(name, points = [], color, width = 5, opacity = 0.78) {
   const valid = compactPoints(points);
   return {
@@ -1258,12 +1288,13 @@ function normalizeVector(vector) {
 function cameraFromHeadMinusZ(trajectory) {
   const points = trajectory.ego?.points || [];
   const quaternions = trajectory.ego?.quaternions || [];
+  const upAxis = trajectoryWorldUpAxis(trajectory);
   const firstPose = points
     .map((point, index) => ({ point, quat: quaternions[index] }))
     .find((item) => validPoint(item.point) && validQuat(item.quat));
   const fallback = {
-    up: { x: 0, y: 1, z: 0 },
-    eye: { x: 1.35, y: 0.85, z: 1.35 },
+    up: axisVectorObject(upAxis),
+    eye: defaultCameraEyeForUpAxis(upAxis),
   };
   if (!firstPose) {
     return fallback;
@@ -1274,7 +1305,7 @@ function cameraFromHeadMinusZ(trajectory) {
   }
   const distance = 1.75;
   return {
-    up: { x: 0, y: 1, z: 0 },
+    up: axisVectorObject(upAxis),
     eye: {
       x: -headMinusZ[0] * distance,
       y: -headMinusZ[1] * distance,
@@ -1722,10 +1753,18 @@ function addEndpointMarkers(scene, points = [], color, radius) {
   scene.add(end);
 }
 
-function addSceneGuides(scene, bounds) {
+function addSceneGuides(scene, bounds, upAxis = "y") {
   const gridSize = Math.max(bounds.span * 1.08, 0.12);
   const grid = new Three3D.GridHelper(gridSize, 10, 0x334155, 0x1f2937);
-  grid.position.set(bounds.center.x, bounds.ranges.y[0], bounds.center.z);
+  if (upAxis === "x") {
+    grid.rotation.z = -Math.PI / 2;
+    grid.position.set(bounds.ranges.x[0], bounds.center.y, bounds.center.z);
+  } else if (upAxis === "z") {
+    grid.rotation.x = Math.PI / 2;
+    grid.position.set(bounds.center.x, bounds.center.y, bounds.ranges.z[0]);
+  } else {
+    grid.position.set(bounds.center.x, bounds.ranges.y[0], bounds.center.z);
+  }
   (Array.isArray(grid.material) ? grid.material : [grid.material]).forEach((material) => {
     material.transparent = true;
     material.opacity = 0.28;
@@ -1834,6 +1873,7 @@ function createTrajectoryView(trajectory) {
   }
 
   const bounds = trajectoryBounds(trajectory);
+  const upAxis = trajectoryWorldUpAxis(trajectory);
   const { width, height } = trajectoryContainerSize();
   const renderer = new Three3D.WebGLRenderer({
     antialias: true,
@@ -1851,7 +1891,7 @@ function createTrajectoryView(trajectory) {
 
   const scene = new Three3D.Scene();
   scene.background = new Three3D.Color(0x0b0f14);
-  addSceneGuides(scene, bounds);
+  addSceneGuides(scene, bounds, upAxis);
 
   const radius = Math.max(bounds.span * 0.0025, 0.0018);
   const markerRadius = Math.max(bounds.span * 0.011, 0.0045);
@@ -1872,11 +1912,12 @@ function createTrajectoryView(trajectory) {
     Math.max(bounds.span / 1000, 0.0005),
     Math.max(bounds.span * 30, 10),
   );
-  camera.up.set(0, 1, 0);
+  setVectorByAxis(camera.up, upAxis);
   const cameraEye = cameraFromHeadMinusZ(trajectory).eye;
   const eyeVector = new Three3D.Vector3(cameraEye.x, cameraEye.y, cameraEye.z);
   if (eyeVector.lengthSq() < 1e-8) {
-    eyeVector.set(1.35, 0.85, 1.35);
+    const fallbackEye = defaultCameraEyeForUpAxis(upAxis);
+    eyeVector.set(fallbackEye.x, fallbackEye.y, fallbackEye.z);
   }
   eyeVector.normalize().multiplyScalar(Math.max(bounds.span * 0.9, 0.2));
   camera.position.copy(bounds.center).add(eyeVector);
