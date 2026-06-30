@@ -11,11 +11,13 @@ import mimetypes
 import os
 import posixpath
 import re
+import secrets
 import sqlite3
 import sys
 import threading
 import time
 from datetime import datetime, timezone
+from http.cookies import SimpleCookie
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path, PurePosixPath
@@ -29,6 +31,7 @@ STATIC_ROOT = PROJECT_ROOT / "web"
 QC_ROOT = PROJECT_ROOT / "qc_results"
 VIDEO_PROXY_ROOT = PROJECT_ROOT / "video_proxy"
 SETTINGS_PATH = QC_ROOT / "settings.json"
+USER_SESSIONS_DB_PATH = QC_ROOT / "user_sessions.db"
 ALLOWED_DATASET_ROOT = Path("/mnt").resolve()
 
 STATUS_VALUES = {"reject", "pending", "accept", "unlabeled"}
@@ -37,6 +40,8 @@ RECORDED_STATUS_VALUES = {"reject", "pending", "accept"}
 DECISION_STATUS_VALUES = {"reject", "accept"}
 EPISODE_RE = re.compile(r"episode_(\d+)\.(mp4|parquet)$")
 PRESENCE_TTL_SECONDS = 8.0
+USER_SESSION_TTL_SECONDS = 7 * 24 * 60 * 60
+USER_SESSION_COOKIE = "lqcp_client_id"
 
 DATASET_CACHE: dict[str, dict[str, Any]] = {}
 TRAJECTORY_CACHE: dict[tuple[str, int, int, int], dict[str, Any]] = {}
@@ -45,6 +50,7 @@ DATASET_CACHE_LOCK = threading.Lock()
 LABEL_LOCK = threading.Lock()
 PRESENCE_LOCK = threading.Lock()
 SETTINGS_LOCK = threading.Lock()
+USER_SESSION_LOCK = threading.Lock()
 SERVER_CONFIG: dict[str, Any] = {}
 
 
@@ -201,6 +207,76 @@ def normalize_user(raw_user: str | None) -> str:
         return "default"
     user = re.sub(r"[^\w.@-]+", "_", raw_user, flags=re.UNICODE).strip("_")
     return (user or "default")[:64]
+
+
+def connect_user_session_db() -> sqlite3.Connection:
+    QC_ROOT.mkdir(parents=True, exist_ok=True)
+    conn = sqlite3.connect(USER_SESSIONS_DB_PATH, timeout=30)
+    conn.row_factory = sqlite3.Row
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS user_sessions (
+            client_id TEXT PRIMARY KEY,
+            user TEXT NOT NULL,
+            created_at REAL NOT NULL,
+            last_used_at REAL NOT NULL
+        )
+        """
+    )
+    return conn
+
+
+def cleanup_user_sessions(conn: sqlite3.Connection) -> None:
+    cutoff = time.time() - USER_SESSION_TTL_SECONDS
+    conn.execute("DELETE FROM user_sessions WHERE last_used_at < ?", (cutoff,))
+
+
+def generate_client_id() -> str:
+    return secrets.token_urlsafe(24)
+
+
+def is_valid_client_id(client_id: str | None) -> bool:
+    return bool(client_id and re.fullmatch(r"[A-Za-z0-9_-]{16,96}", client_id))
+
+
+def session_row_payload(row: sqlite3.Row | None) -> dict[str, Any]:
+    if not row:
+        return {"user": None, "last_used_at": None}
+    return {
+        "user": row["user"],
+        "last_used_at": datetime.fromtimestamp(float(row["last_used_at"]), timezone.utc).isoformat(timespec="seconds"),
+    }
+
+
+def read_user_session(client_id: str) -> dict[str, Any]:
+    with USER_SESSION_LOCK, connect_user_session_db() as conn:
+        cleanup_user_sessions(conn)
+        row = conn.execute(
+            "SELECT user, last_used_at FROM user_sessions WHERE client_id = ?",
+            (client_id,),
+        ).fetchone()
+        return session_row_payload(row)
+
+
+def save_user_session(client_id: str, user: str) -> dict[str, Any]:
+    now = time.time()
+    with USER_SESSION_LOCK, connect_user_session_db() as conn:
+        cleanup_user_sessions(conn)
+        conn.execute(
+            """
+            INSERT INTO user_sessions(client_id, user, created_at, last_used_at)
+            VALUES (?, ?, ?, ?)
+            ON CONFLICT(client_id) DO UPDATE SET
+                user = excluded.user,
+                last_used_at = excluded.last_used_at
+            """,
+            (client_id, user, now, now),
+        )
+        row = conn.execute(
+            "SELECT user, last_used_at FROM user_sessions WHERE client_id = ?",
+            (client_id,),
+        ).fetchone()
+        return session_row_payload(row)
 
 
 def labels_dir(dataset_path: Path) -> Path:
@@ -1450,6 +1526,20 @@ class QCRequestHandler(BaseHTTPRequestHandler):
         supplied = query_value(query, "token") or self.headers.get("X-LQCP-Token") or ""
         return supplied == token
 
+    def ensure_client_cookie(self) -> tuple[str, str]:
+        cookie = SimpleCookie()
+        cookie.load(self.headers.get("Cookie", ""))
+        client_id = cookie.get(USER_SESSION_COOKIE).value if cookie.get(USER_SESSION_COOKIE) else ""
+        if not is_valid_client_id(client_id):
+            client_id = generate_client_id()
+        morsel = SimpleCookie()
+        morsel[USER_SESSION_COOKIE] = client_id
+        morsel[USER_SESSION_COOKIE]["path"] = "/"
+        morsel[USER_SESSION_COOKIE]["max-age"] = str(USER_SESSION_TTL_SECONDS)
+        morsel[USER_SESSION_COOKIE]["samesite"] = "Lax"
+        morsel[USER_SESSION_COOKIE]["httponly"] = True
+        return client_id, morsel.output(header="").strip()
+
     def read_body_json(self) -> dict[str, Any]:
         length = int(self.headers.get("Content-Length", "0"))
         raw = self.rfile.read(length) if length else b"{}"
@@ -1461,12 +1551,15 @@ class QCRequestHandler(BaseHTTPRequestHandler):
             raise AppError("JSON body must be an object", 400)
         return data
 
-    def send_json(self, payload: Any, status: int = 200) -> None:
+    def send_json(self, payload: Any, status: int = 200, extra_headers: dict[str, str] | None = None) -> None:
         body = json.dumps(payload, ensure_ascii=False, default=json_default).encode("utf-8")
         self.send_response(status)
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Content-Length", str(len(body)))
         self.send_header("Cache-Control", "no-store")
+        if extra_headers:
+            for key, value in extra_headers.items():
+                self.send_header(key, value)
         self.end_headers()
         if self.command != "HEAD":
             self.wfile.write(body)
@@ -1486,6 +1579,18 @@ class QCRequestHandler(BaseHTTPRequestHandler):
     def handle_api(self, method: str, parsed: Any) -> None:
         query = parse_qs(parsed.query)
         user = normalize_user(query_value(query, "user"))
+
+        if parsed.path == "/api/session":
+            client_id, cookie_header = self.ensure_client_cookie()
+            if method == "GET":
+                self.send_json(read_user_session(client_id), extra_headers={"Set-Cookie": cookie_header})
+                return
+            if method == "POST":
+                payload = self.read_body_json()
+                session_user = normalize_user(payload.get("user"))
+                self.send_json(save_user_session(client_id, session_user), extra_headers={"Set-Cookie": cookie_header})
+                return
+            raise AppError("Method not allowed", 405)
 
         if parsed.path == "/api/settings":
             if method == "GET":
@@ -1686,6 +1791,8 @@ class QCRequestHandler(BaseHTTPRequestHandler):
 
             with LABEL_LOCK:
                 updated_store = write_label_db(dataset_path, dataset, user, episode_index, status, issues, note)
+            client_id, cookie_header = self.ensure_client_cookie()
+            save_user_session(client_id, user)
 
             heartbeat_episode(dataset_path, user, episode_index)
             locked_by = presence_snapshot(dataset_path, user).get(episode_index, [])
@@ -1702,7 +1809,8 @@ class QCRequestHandler(BaseHTTPRequestHandler):
                     "labels_path": str(labels_path(dataset_path)),
                     "labels_jsonl_path": str(labels_jsonl_path(dataset_path)),
                     "labels_db_path": str(labels_db_path(dataset_path)),
-                }
+                },
+                extra_headers={"Set-Cookie": cookie_header},
             )
             return
 
@@ -1717,6 +1825,8 @@ class QCRequestHandler(BaseHTTPRequestHandler):
 
             with LABEL_LOCK:
                 updated_store = write_label_db(dataset_path, dataset, user, episode_index, status, [], "", force=True)
+            client_id, cookie_header = self.ensure_client_cookie()
+            save_user_session(client_id, user)
 
             label = label_for_episode(updated_store, user, episode_index)
             locked_by = presence_snapshot(dataset_path, user).get(episode_index, [])
@@ -1733,7 +1843,8 @@ class QCRequestHandler(BaseHTTPRequestHandler):
                     "labels_path": str(labels_path(dataset_path)),
                     "labels_jsonl_path": str(labels_jsonl_path(dataset_path)),
                     "labels_db_path": str(labels_db_path(dataset_path)),
-                }
+                },
+                extra_headers={"Set-Cookie": cookie_header},
             )
             return
 

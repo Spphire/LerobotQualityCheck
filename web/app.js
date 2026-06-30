@@ -80,8 +80,13 @@ const state = {
   trajectoryHighlightTraceIndexes: [],
   lastTrajectoryHighlightFrame: null,
   lastTrajectoryHighlightAt: 0,
+  trajectoryDomEventsBound: false,
   trajectoryPlotEventsBound: false,
   isInteractingTrajectory: false,
+  isRestoringTrajectoryCamera: false,
+  trajectoryCamera: null,
+  trajectoryCameraRevision: 0,
+  trajectoryWheelTimer: null,
   framesRequest: 0,
   searchRequest: 0,
   lastPlaybackUiAt: 0,
@@ -212,6 +217,7 @@ function syncNavigationLinks() {
 async function requestJson(path, options = {}) {
   const response = await fetch(path, {
     ...options,
+    credentials: "same-origin",
     headers: {
       "Content-Type": "application/json",
       ...(state.token ? { "X-LQCP-Token": state.token } : {}),
@@ -229,6 +235,33 @@ async function requestJson(path, options = {}) {
     throw new Error(data.error || response.statusText);
   }
   return data;
+}
+
+async function saveUserSession() {
+  await requestJson(apiUrl("/api/session"), {
+    method: "POST",
+    body: JSON.stringify({ user: state.user }),
+  });
+}
+
+async function loadUserSession() {
+  try {
+    if (userFromUrl) {
+      await saveUserSession();
+      return;
+    }
+    const session = await requestJson(apiUrl("/api/session"));
+    if (session.user) {
+      state.user = session.user;
+      window.localStorage.setItem(USER_STORAGE_KEY, state.user);
+      return;
+    }
+    if (storedUser) {
+      await saveUserSession();
+    }
+  } catch (error) {
+    console.warn("User session restore failed", error);
+  }
 }
 
 function escapeHtml(value) {
@@ -1173,6 +1206,44 @@ function cameraFromHeadMinusZ(trajectory) {
   };
 }
 
+function cloneTrajectoryCamera(camera) {
+  if (!camera) {
+    return null;
+  }
+  return JSON.parse(JSON.stringify(camera));
+}
+
+function currentTrajectoryCamera() {
+  const camera = el.trajectoryCanvas?._fullLayout?.scene?.camera;
+  return cloneTrajectoryCamera(camera);
+}
+
+function rememberTrajectoryCamera(camera = currentTrajectoryCamera()) {
+  if (!camera || state.isRestoringTrajectoryCamera) {
+    return;
+  }
+  state.trajectoryCamera = cloneTrajectoryCamera(camera);
+  state.trajectoryCameraRevision += 1;
+}
+
+function relayoutTouchesTrajectoryCamera(eventData = {}) {
+  return Object.keys(eventData || {}).some((key) => key === "scene.camera" || key.startsWith("scene.camera."));
+}
+
+function restoreTrajectoryCamera(camera) {
+  if (!Plotly3D || !el.trajectoryCanvas || !camera) {
+    return;
+  }
+  state.isRestoringTrajectoryCamera = true;
+  Plotly3D.relayout(el.trajectoryCanvas, { "scene.camera": camera })
+    .catch(() => {})
+    .finally(() => {
+      window.setTimeout(() => {
+        state.isRestoringTrajectoryCamera = false;
+      }, 0);
+    });
+}
+
 function segmentTrace(name, segments, color) {
   return {
     type: "scatter3d",
@@ -1233,25 +1304,50 @@ function poseAxesTraces(points = [], quaternions = []) {
 }
 
 function bindTrajectoryInteractionGuards() {
-  if (!el.trajectoryCanvas || state.trajectoryPlotEventsBound) {
+  if (!el.trajectoryCanvas) {
     return;
   }
-  state.trajectoryPlotEventsBound = true;
-  el.trajectoryCanvas.addEventListener("pointerdown", () => {
-    state.isInteractingTrajectory = true;
-  });
-  window.addEventListener("pointerup", () => {
-    if (!state.isInteractingTrajectory) {
-      return;
-    }
-    window.setTimeout(() => {
+  if (!state.trajectoryDomEventsBound) {
+    state.trajectoryDomEventsBound = true;
+    el.trajectoryCanvas.addEventListener("pointerdown", () => {
+      state.isInteractingTrajectory = true;
+    });
+    window.addEventListener("pointerup", () => {
+      if (!state.isInteractingTrajectory) {
+        return;
+      }
+      window.setTimeout(() => {
+        rememberTrajectoryCamera();
+        state.isInteractingTrajectory = false;
+      }, 120);
+    });
+    window.addEventListener("pointercancel", () => {
+      rememberTrajectoryCamera();
       state.isInteractingTrajectory = false;
-      updateTrajectoryHighlight(true);
-    }, 120);
-  });
-  window.addEventListener("pointercancel", () => {
-    state.isInteractingTrajectory = false;
-  });
+    });
+    el.trajectoryCanvas.addEventListener("wheel", () => {
+      state.isInteractingTrajectory = true;
+      window.clearTimeout(state.trajectoryWheelTimer);
+      window.setTimeout(() => rememberTrajectoryCamera(), 0);
+      state.trajectoryWheelTimer = window.setTimeout(() => {
+        rememberTrajectoryCamera();
+        state.isInteractingTrajectory = false;
+      }, 180);
+    }, { passive: true });
+  }
+  if (!state.trajectoryPlotEventsBound && typeof el.trajectoryCanvas.on === "function") {
+    state.trajectoryPlotEventsBound = true;
+    el.trajectoryCanvas.on("plotly_relayout", (eventData) => {
+      if (relayoutTouchesTrajectoryCamera(eventData)) {
+        rememberTrajectoryCamera();
+      }
+    });
+    el.trajectoryCanvas.on("plotly_relayouting", (eventData) => {
+      if (relayoutTouchesTrajectoryCamera(eventData)) {
+        rememberTrajectoryCamera();
+      }
+    });
+  }
 }
 
 function renderTrajectory3D(trajectory) {
@@ -1278,6 +1374,8 @@ function renderTrajectory3D(trajectory) {
   state.trajectoryHighlightTraceIndexes = [highlightStart, highlightStart + 1, highlightStart + 2, highlightStart + 3];
   state.lastTrajectoryHighlightFrame = null;
   state.lastTrajectoryHighlightAt = 0;
+  state.trajectoryCamera = cloneTrajectoryCamera(cameraFromHeadMinusZ(trajectory));
+  state.trajectoryCameraRevision = 0;
   const axisStyle = {
     showbackground: true,
     backgroundcolor: "#0b0f14",
@@ -1299,7 +1397,7 @@ function renderTrajectory3D(trajectory) {
       xaxis: { ...axisStyle, title: "x" },
       yaxis: { ...axisStyle, title: "y ↑" },
       zaxis: { ...axisStyle, title: "z" },
-      camera: cameraFromHeadMinusZ(trajectory),
+      camera: state.trajectoryCamera,
     },
   };
   const config = {
@@ -1309,16 +1407,19 @@ function renderTrajectory3D(trajectory) {
     modeBarButtonsToRemove: ["lasso2d", "select2d"],
   };
   bindTrajectoryInteractionGuards();
-  Plotly3D.react(el.trajectoryCanvas, traces, layout, config);
+  Plotly3D.react(el.trajectoryCanvas, traces, layout, config)
+    .then(() => {
+      bindTrajectoryInteractionGuards();
+      rememberTrajectoryCamera(state.trajectoryCamera);
+      updateTrajectoryHighlight(true);
+    })
+    .catch(() => {});
   updateTrajectoryHighlight(true);
   el.trajectoryState.textContent = `${formatNumber(trajectory.total_rows)} frames · stride ${trajectory.stride}`;
 }
 
 function updateTrajectoryHighlight(force = false) {
   if (!Plotly3D || !state.trajectory || !state.trajectoryHighlightTraceIndexes.length || !el.trajectoryCanvas) {
-    return;
-  }
-  if (!force && state.isInteractingTrajectory) {
     return;
   }
   const frame = currentFrameNumber();
@@ -1343,11 +1444,23 @@ function updateTrajectoryHighlight(force = false) {
   const pointY = (sample) => (sample.point ? [sample.point[1]] : []);
   const pointZ = (sample) => (sample.point ? [sample.point[2]] : []);
 
+  const cameraRevision = state.trajectoryCameraRevision;
+  const cameraBeforeUpdate = cloneTrajectoryCamera(state.trajectoryCamera);
   Plotly3D.restyle(el.trajectoryCanvas, {
     x: [trailX(left), pointX(left), trailX(right), pointX(right)],
     y: [trailY(left), pointY(left), trailY(right), pointY(right)],
     z: [trailZ(left), pointZ(left), trailZ(right), pointZ(right)],
-  }, state.trajectoryHighlightTraceIndexes).catch(() => {});
+  }, state.trajectoryHighlightTraceIndexes)
+    .then(() => {
+      if (state.isInteractingTrajectory) {
+        return;
+      }
+      const camera = state.trajectoryCameraRevision === cameraRevision
+        ? cameraBeforeUpdate
+        : state.trajectoryCamera;
+      restoreTrajectoryCamera(camera);
+    })
+    .catch(() => {});
 }
 
 function resizeTrajectoryPlot() {
@@ -1983,6 +2096,8 @@ function bindEvents() {
     }
     releaseCurrentPresence();
     state.user = nextUser;
+    window.localStorage.setItem(USER_STORAGE_KEY, state.user);
+    await saveUserSession();
     state.page = 1;
     await runWithErrors(() => loadEpisodes({ keepSelection: false }));
   }
@@ -2236,6 +2351,7 @@ function animationLoop(now = 0) {
 async function main() {
   initElements();
   renderIssueOptions();
+  await loadUserSession();
   bindEvents();
   drawCanvasMessage(el.leftGripperCanvas, "等待轨迹数据");
   drawCanvasMessage(el.rightGripperCanvas, "等待轨迹数据");
