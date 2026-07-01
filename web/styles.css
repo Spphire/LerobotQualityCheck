@@ -1554,6 +1554,262 @@ canvas {
   color: var(--red);
 }
 
+body[data-mode="phone"] {
+  overflow: hidden;
+  overscroll-behavior: none;
+  background: #f5f5f7;
+  touch-action: manipulation;
+}
+
+body[data-mode="phone"].phone-drawer-open {
+  overflow: hidden;
+}
+
+.phone-shell {
+  display: grid;
+  grid-template-rows: 1fr 9fr;
+  width: 100vw;
+  height: 100dvh;
+  min-height: 100vh;
+  padding: max(8px, env(safe-area-inset-top)) max(8px, env(safe-area-inset-right)) max(8px, env(safe-area-inset-bottom)) max(8px, env(safe-area-inset-left));
+  gap: 8px;
+}
+
+.phone-topbar {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 42px;
+  align-items: center;
+  min-height: 0;
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.78);
+  box-shadow: var(--shadow-soft);
+  backdrop-filter: blur(18px) saturate(150%);
+}
+
+.phone-episode-summary {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  grid-template-rows: minmax(0, auto) minmax(0, auto);
+  align-items: center;
+  gap: 2px 8px;
+  min-width: 0;
+}
+
+.phone-episode-summary .status-pill {
+  grid-row: 1 / span 2;
+}
+
+.phone-episode-summary h1 {
+  min-width: 0;
+  margin: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: clamp(16px, 5vw, 22px);
+  line-height: 1.05;
+}
+
+.phone-episode-summary p {
+  min-width: 0;
+  margin: 0;
+  color: var(--muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 11px;
+}
+
+.phone-icon-button {
+  display: grid;
+  width: 38px;
+  min-width: 38px;
+  height: 38px;
+  min-height: 38px;
+  place-items: center;
+  padding: 0;
+  border-radius: 8px;
+  font-size: 20px;
+  line-height: 1;
+}
+
+.phone-main {
+  display: grid;
+  grid-template-rows: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+  min-width: 0;
+  min-height: 0;
+}
+
+.phone-trajectory-panel,
+.phone-grippers,
+.phone-video-stream {
+  min-width: 0;
+  min-height: 0;
+}
+
+.phone-grippers {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.phone-grippers .canvas-panel {
+  grid-template-rows: 26px minmax(0, 1fr);
+}
+
+.phone-grippers .canvas-panel header,
+body[data-mode="phone"] .trajectory-panel header,
+body[data-mode="phone"] .quick-video-card header {
+  min-height: 0;
+  padding: 0 8px;
+  font-size: 12px;
+}
+
+body[data-mode="phone"] .trajectory-legend {
+  right: 8px;
+  bottom: 8px;
+  gap: 7px;
+  padding: 4px 6px;
+  font-size: 10px;
+}
+
+body[data-mode="phone"] .video-stream-inner {
+  display: flex;
+  align-items: stretch;
+  justify-content: center;
+  gap: 8px;
+  height: 100%;
+  overflow: hidden;
+}
+
+body[data-mode="phone"] .quick-video-card {
+  flex: 0 1 auto;
+  width: auto;
+  max-width: 44vw;
+  aspect-ratio: var(--video-aspect, 16 / 9);
+  grid-template-rows: 24px minmax(0, 1fr);
+}
+
+body[data-mode="phone"] .quick-video {
+  width: 100%;
+  aspect-ratio: var(--video-aspect, 16 / 9);
+}
+
+.phone-drawer {
+  position: fixed;
+  inset: 0;
+  z-index: 70;
+  pointer-events: none;
+}
+
+.phone-drawer-backdrop {
+  position: absolute;
+  inset: 0;
+  background: rgba(20, 20, 24, 0);
+  backdrop-filter: blur(0);
+  transition: background 180ms ease, backdrop-filter 180ms ease;
+}
+
+.phone-drawer-panel {
+  position: absolute;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  display: grid;
+  grid-template-rows: auto auto auto auto auto auto minmax(0, 1fr) auto auto;
+  gap: 10px;
+  width: min(88vw, 380px);
+  min-height: 0;
+  padding: max(12px, env(safe-area-inset-top)) max(12px, env(safe-area-inset-right)) max(12px, env(safe-area-inset-bottom)) 12px;
+  border-left: 1px solid var(--line);
+  background: rgba(255, 255, 255, 0.86);
+  box-shadow: -18px 0 38px rgba(0, 0, 0, 0.16);
+  backdrop-filter: blur(24px) saturate(160%);
+  transform: translateX(104%);
+  transition: transform 180ms ease;
+}
+
+.phone-drawer.open {
+  pointer-events: auto;
+}
+
+.phone-drawer.open .phone-drawer-backdrop {
+  background: rgba(20, 20, 24, 0.2);
+  backdrop-filter: blur(8px);
+}
+
+.phone-drawer.open .phone-drawer-panel {
+  transform: translateX(0);
+}
+
+.phone-drawer-header {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 38px;
+  align-items: center;
+  gap: 10px;
+}
+
+.phone-drawer-header strong,
+.phone-drawer-header span {
+  display: block;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.phone-drawer-header strong {
+  font-size: 16px;
+}
+
+.phone-drawer-header span {
+  margin-top: 2px;
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.phone-status-panel {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 8px;
+}
+
+.phone-status-panel .status-actions {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.phone-status-panel .status-actions button {
+  min-width: 0;
+}
+
+.phone-status-panel .keyboard-help {
+  justify-content: flex-start;
+  gap: 5px 10px;
+}
+
+.phone-video-controls .video-toolbar {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  justify-content: stretch;
+}
+
+.phone-video-controls .progress-control {
+  grid-column: 1 / -1;
+  grid-template-columns: minmax(0, 1fr) 38px;
+}
+
+body[data-mode="phone"] .episode-list {
+  min-height: 0;
+}
+
+body[data-mode="phone"] .shortcut-panel {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
 @media (max-width: 1180px) {
   .app-shell {
     grid-template-columns: 300px minmax(0, 1fr);

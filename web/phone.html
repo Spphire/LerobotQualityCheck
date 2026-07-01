@@ -1,0 +1,217 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <title>LeRobot 手机质检</title>
+    <link rel="icon" href="data:," />
+    <link rel="stylesheet" href="/styles.css?v=20260701-phone" />
+    <script type="module" src="/app.js?v=20260701-phone"></script>
+  </head>
+  <body data-mode="phone">
+    <div class="phone-shell">
+      <header class="phone-topbar">
+        <div class="phone-episode-summary">
+          <span id="currentStatus" class="status-pill pending">待审</span>
+          <h1 id="episodeTitle">选择 episode</h1>
+          <p id="episodeMeta"></p>
+        </div>
+        <button id="phoneSettingsButton" class="phone-icon-button" type="button" aria-label="打开设置" aria-expanded="false" aria-controls="phoneDrawer">⚙</button>
+      </header>
+
+      <main class="phone-main">
+        <section class="trajectory-panel phone-trajectory-panel">
+          <header>
+            <span>3D 轨迹</span>
+            <span id="trajectoryState">等待数据</span>
+          </header>
+          <div id="trajectoryCanvas" class="trajectory-plot"></div>
+          <div class="trajectory-legend">
+            <span class="legend-left-state">左手</span>
+            <span class="legend-right-state">右手</span>
+          </div>
+        </section>
+
+        <section class="phone-grippers">
+          <article class="canvas-panel curve-panel">
+            <header><span>左手夹爪</span></header>
+            <canvas id="leftGripperCanvas"></canvas>
+          </article>
+          <article class="canvas-panel curve-panel">
+            <header><span>右手夹爪</span></header>
+            <canvas id="rightGripperCanvas"></canvas>
+          </article>
+        </section>
+
+        <section class="video-stream phone-video-stream">
+          <div class="video-stream-inner">
+            <article class="quick-video-card">
+              <header>左腕</header>
+              <video id="quickVideoLeft" class="video-canvas quick-video" muted playsinline loop preload="metadata"></video>
+            </article>
+            <article class="quick-video-card">
+              <header>头部</header>
+              <video id="quickVideoHead" class="video-canvas quick-video" muted playsinline loop preload="metadata"></video>
+            </article>
+            <article class="quick-video-card">
+              <header>右腕</header>
+              <video id="quickVideoRight" class="video-canvas quick-video" muted playsinline loop preload="metadata"></video>
+            </article>
+          </div>
+        </section>
+      </main>
+
+      <aside id="phoneDrawer" class="phone-drawer" aria-label="质检控制面板" aria-hidden="true">
+        <div class="phone-drawer-backdrop" data-phone-drawer-close></div>
+        <section class="phone-drawer-panel">
+          <header class="phone-drawer-header">
+            <div>
+              <strong>质检控制</strong>
+              <span id="datasetSubtitle">/mnt/nm_dataset/dataset/giftbox_0628_1912episodes</span>
+            </div>
+            <button id="phoneDrawerCloseButton" class="phone-icon-button" type="button" aria-label="关闭设置">×</button>
+          </header>
+
+          <section class="control-panel">
+            <label>
+              <span>用户</span>
+              <input id="userInput" type="text" spellcheck="false" />
+            </label>
+          </section>
+
+          <section class="summary-panel">
+            <div>
+              <span class="metric-label">总数</span>
+              <strong id="totalCount">0</strong>
+            </div>
+            <div>
+              <span class="metric-label">我的已标</span>
+              <strong id="markedCount">0</strong>
+            </div>
+            <div>
+              <span class="metric-label">拒绝</span>
+              <strong id="rejectCount">0</strong>
+            </div>
+            <div>
+              <span class="metric-label">全员已标</span>
+              <strong id="allMarkedCount">0</strong>
+            </div>
+            <div class="progress">
+              <span id="progressBar"></span>
+            </div>
+          </section>
+
+          <section class="filter-panel">
+            <input id="searchInput" type="search" placeholder="搜索 episode / uuid / 任务" />
+          </section>
+
+          <section class="phone-status-panel review-panel">
+            <div class="status-actions">
+              <button id="rejectButton" class="reject-action" type="button">拒绝</button>
+              <button id="pendingButton" class="pending-action" type="button">待审</button>
+              <button id="acceptButton" class="accept-action" type="button">接收</button>
+            </div>
+            <div class="keyboard-help" aria-label="手机手势控制提示">
+              <span>左/右滑切换状态</span>
+              <span>上滑下一条，下滑上一条</span>
+              <span>点击曲线查看对应腕部画面</span>
+              <span id="saveState"></span>
+            </div>
+          </section>
+
+          <section class="phone-video-controls">
+            <div class="video-toolbar">
+              <button id="playAllButton" type="button">播放</button>
+              <button id="pauseAllButton" type="button">暂停</button>
+              <button id="restartAllButton" type="button">归零</button>
+              <select id="speedSelect">
+                <option value="0.5">0.5x</option>
+                <option value="1">1x</option>
+                <option value="1.5">1.5x</option>
+                <option value="2">2x</option>
+                <option value="3">3x</option>
+                <option value="5">5x</option>
+                <option value="10" selected>10x</option>
+              </select>
+              <label class="progress-control">
+                <input id="videoProgress" type="range" min="0" max="1000" value="0" />
+                <span id="videoTime">0%</span>
+              </label>
+            </div>
+          </section>
+
+          <div id="episodeList" class="episode-list" tabindex="-1"></div>
+
+          <section class="pager">
+            <button id="prevPageButton" type="button">上一页</button>
+            <span id="pageInfo">1 / 1</span>
+            <button id="nextPageButton" type="button">下一页</button>
+          </section>
+
+          <section class="shortcut-panel">
+            <a class="sidebar-link" href="/rank" data-context-link="/rank">排行榜</a>
+            <a class="sidebar-link" href="/" data-context-link="/">普通质检</a>
+          </section>
+        </section>
+      </aside>
+
+      <div id="videoModal" class="video-modal" hidden>
+        <section class="video-dialog" role="dialog" aria-modal="true" aria-labelledby="modalVideoTitle">
+          <header>
+            <h3 id="modalVideoTitle">腕部视频</h3>
+            <button id="closeVideoModalButton" type="button" aria-label="关闭">×</button>
+          </header>
+          <video id="modalVideo" muted playsinline loop></video>
+          <div class="modal-video-toolbar">
+            <button id="modalPlayPauseButton" type="button">暂停</button>
+            <input id="modalVideoProgress" type="range" min="0" max="1000" value="0" />
+            <span id="modalVideoTime">0:00 / 0:00</span>
+          </div>
+        </section>
+      </div>
+
+      <div id="rejectOverlay" class="reject-overlay" aria-hidden="true" hidden>
+        <div class="reject-slash"></div>
+        <div class="reject-card">
+          <span class="reject-kicker">KILLED</span>
+          <strong id="rejectCollectorName">未知采集人</strong>
+        </div>
+      </div>
+
+      <div id="reviveOverlay" class="revive-overlay" aria-hidden="true" hidden>
+        <div class="revive-flash"></div>
+        <div class="revive-ring"></div>
+        <img id="reviveTotemAsset" class="revive-totem-asset" src="/dev-assets/minecraft/totem_of_undying.png" alt="" aria-hidden="true" />
+        <div class="revive-totem" aria-hidden="true">
+          <span class="revive-totem-head"></span>
+          <span class="revive-totem-eye revive-totem-eye-left"></span>
+          <span class="revive-totem-eye revive-totem-eye-right"></span>
+          <span class="revive-totem-body"></span>
+          <span class="revive-totem-arm revive-totem-arm-left"></span>
+          <span class="revive-totem-arm revive-totem-arm-right"></span>
+          <span class="revive-totem-gem"></span>
+        </div>
+        <div class="revive-particles" aria-hidden="true">
+          <span style="--x:-44vw; --y:-34vh; --d:0ms;"></span>
+          <span style="--x:-32vw; --y:24vh; --d:45ms;"></span>
+          <span style="--x:-24vw; --y:-18vh; --d:95ms;"></span>
+          <span style="--x:-14vw; --y:34vh; --d:135ms;"></span>
+          <span style="--x:-6vw; --y:-42vh; --d:15ms;"></span>
+          <span style="--x:8vw; --y:32vh; --d:80ms;"></span>
+          <span style="--x:18vw; --y:-28vh; --d:120ms;"></span>
+          <span style="--x:28vw; --y:20vh; --d:35ms;"></span>
+          <span style="--x:38vw; --y:-14vh; --d:100ms;"></span>
+          <span style="--x:48vw; --y:36vh; --d:160ms;"></span>
+          <span style="--x:-50vw; --y:4vh; --d:70ms;"></span>
+          <span style="--x:52vw; --y:-38vh; --d:55ms;"></span>
+        </div>
+        <div class="revive-collector-card">
+          <span class="revive-collector-kicker">REVIVED</span>
+          <strong id="reviveCollectorName">未知采集人</strong>
+        </div>
+      </div>
+
+      <div id="hiddenVideos" hidden></div>
+    </div>
+  </body>
+</html>
