@@ -1876,17 +1876,11 @@ function replaceObjectGeometry(object, geometry) {
 }
 
 function addTrajectoryTube(scene, points, colors, radius) {
-  const glow = createTubeMesh(
-    points,
-    radius * 4,
-    createMeshMaterial(colors.glow, 0.24, true),
-  );
   const core = createTubeMesh(
     points,
     radius,
     createMeshMaterial(colors.core, 0.86, false),
   );
-  scene.add(glow);
   scene.add(core);
 }
 
@@ -2042,11 +2036,9 @@ function createTrajectoryView(trajectory) {
   const radius = Math.max(bounds.span * 0.0025, 0.0018);
   const markerRadius = Math.max(bounds.span * 0.011, 0.0045);
   addTrajectoryTube(scene, trajectory.left?.points || [], {
-    glow: 0x22c55e,
     core: 0x4ade80,
   }, radius);
   addTrajectoryTube(scene, trajectory.right?.points || [], {
-    glow: 0xf43f5e,
     core: 0xfb7185,
   }, radius);
   addEndpointMarkers(scene, trajectory.left?.points || [], 0x4ade80, markerRadius * 0.8);
