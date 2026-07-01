@@ -80,6 +80,12 @@ const state = {
   syncInFlight: false,
   syncTimer: null,
   navAnchor: { listKey: "", episodeIndex: null, listIndex: -1 },
+  userActionQueue: Promise.resolve(),
+  userActionPending: 0,
+  listRequest: 0,
+  episodeRequest: 0,
+  labelRequest: 0,
+  trajectoryTimer: null,
   trajectory: null,
   trajectoryRequest: 0,
   lastTrajectoryHighlightFrame: null,
@@ -2262,6 +2268,25 @@ async function loadTrajectoryForEpisode(episodeIndex) {
   }
 }
 
+function scheduleTrajectoryForEpisode(episodeIndex) {
+  if (state.trajectoryTimer) {
+    window.clearTimeout(state.trajectoryTimer);
+    state.trajectoryTimer = null;
+  }
+  if (episodeIndex === null || episodeIndex === undefined) {
+    state.trajectory = null;
+    state.lastTrajectoryHighlightFrame = null;
+    disposeTrajectoryView();
+    return;
+  }
+  state.trajectoryTimer = window.setTimeout(() => {
+    state.trajectoryTimer = null;
+    if (state.currentIndex === episodeIndex) {
+      loadTrajectoryForEpisode(episodeIndex);
+    }
+  }, 120);
+}
+
 function renderCurrent(current) {
   state.current = current;
   state.currentIndex = current?.episode?.episode_index ?? null;
@@ -2278,7 +2303,7 @@ function renderCurrent(current) {
   renderLabelForm(current?.label || {});
   renderEpisodeList();
   if (state.currentIndex !== null) {
-    loadTrajectoryForEpisode(state.currentIndex);
+    scheduleTrajectoryForEpisode(state.currentIndex);
   }
 }
 
@@ -2406,6 +2431,8 @@ async function fetchCurrentEpisodeListData({ refresh = false } = {}) {
 }
 
 async function loadEpisodes({ refresh = false, keepSelection = true, preferLast = false, selectEpisodeIndex = null } = {}) {
+  const requestId = state.listRequest + 1;
+  state.listRequest = requestId;
   if (!keepSelection) {
     state.currentIndex = null;
     state.current = null;
@@ -2416,6 +2443,9 @@ async function loadEpisodes({ refresh = false, keepSelection = true, preferLast 
   window.localStorage.setItem(PAGE_STORAGE_KEY, String(state.page));
   syncBrowserUrl();
   const data = await fetchCurrentEpisodeListData({ refresh });
+  if (requestId !== state.listRequest) {
+    return;
+  }
   applyEpisodeListData(data);
 
   const targetIndex = selectEpisodeIndex === null ? null : Number(selectEpisodeIndex);
@@ -2472,14 +2502,23 @@ async function jumpToInitialEpisode() {
 }
 
 async function selectEpisode(episodeIndex) {
+  const requestId = state.episodeRequest + 1;
+  state.episodeRequest = requestId;
   setSaveState("");
   updateNavigationAnchor(episodeIndex);
   const episodePath = state.adminReview ? "/api/admin/episode" : "/api/episode";
   const current = await requestJson(apiUrl(episodePath, { episode_index: episodeIndex }));
+  const responseIndex = current.episode?.episode_index ?? current.episode_index;
+  if (requestId !== state.episodeRequest || responseIndex !== episodeIndex) {
+    return;
+  }
   renderCurrent(current);
 }
 
 async function syncSharedState() {
+  if (state.userActionPending > 0) {
+    return;
+  }
   if (state.syncInFlight) {
     return;
   }
@@ -2557,13 +2596,16 @@ async function saveLabel(status = state.selectedStatus) {
   if (state.currentIndex === null) {
     return;
   }
+  const requestId = state.labelRequest + 1;
+  state.labelRequest = requestId;
+  const episodeIndex = state.currentIndex;
   const finalStatus = STATUS_ORDER.includes(status) ? status : "pending";
   const previousStatus = normalizeStatus(state.current?.label?.status || state.current?.summary?.status || state.selectedStatus);
   const shouldPlayRejectOverlay = finalStatus === "reject" && previousStatus !== "reject";
   const shouldPlayReviveOverlay = finalStatus === "accept" && previousStatus !== "accept";
   const labelEffectRequest = ++state.labelEffectRequest;
   const payload = {
-    episode_index: state.currentIndex,
+    episode_index: episodeIndex,
     status: finalStatus,
     issues: [],
     note: "",
@@ -2576,69 +2618,86 @@ async function saveLabel(status = state.selectedStatus) {
     method: "POST",
     body: JSON.stringify(payload),
   });
+  const stillCurrent = state.currentIndex === episodeIndex && requestId === state.labelRequest;
   state.counts = result.counts;
   state.users = result.users || state.users;
   renderSummary(result.counts);
-  renderLabelForm(result.label);
-  if (state.current) {
+  if (stillCurrent) {
+    renderLabelForm(result.label);
+  }
+  if (stillCurrent && state.current) {
     state.current.label = result.label;
     state.current.summary = result.summary || {
       ...state.current.summary,
       status: normalizeStatus(result.label.status),
     };
   }
-  renderHeader(state.current);
+  if (stillCurrent) {
+    renderHeader(state.current);
+  }
   if (state.adminReview && state.status !== "all") {
     await loadEpisodes({ keepSelection: true });
   } else {
-    updateEpisodeInList(state.currentIndex, result.label, result.episode_label_summary, result.summary);
+    updateEpisodeInList(episodeIndex, result.label, result.episode_label_summary, result.summary);
   }
   if (shouldPlayRejectOverlay) {
     const overlayRequest = ++state.rejectOverlayRequest;
     collectorNameForEpisode(payload.episode_index).then((collectorName) => {
-      if (overlayRequest === state.rejectOverlayRequest && labelEffectRequest === state.labelEffectRequest) {
+      if (state.currentIndex === episodeIndex && overlayRequest === state.rejectOverlayRequest && labelEffectRequest === state.labelEffectRequest) {
         playRejectOverlay(collectorName);
       }
     });
   }
   if (shouldPlayReviveOverlay) {
     collectorNameForEpisode(payload.episode_index).then((collectorName) => {
-      if (labelEffectRequest === state.labelEffectRequest) {
+      if (state.currentIndex === episodeIndex && labelEffectRequest === state.labelEffectRequest) {
         playReviveOverlay(collectorName);
       }
     });
   }
-  setSaveState("已保存");
+  if (stillCurrent) {
+    setSaveState("已保存");
+  }
 }
 
 async function clearLabel() {
   if (state.currentIndex === null) {
     return;
   }
+  const requestId = state.labelRequest + 1;
+  state.labelRequest = requestId;
+  const episodeIndex = state.currentIndex;
   setSaveState("保存中");
   const result = await requestJson(apiUrl("/api/label"), {
     method: "POST",
     body: JSON.stringify({
-      episode_index: state.currentIndex,
+      episode_index: episodeIndex,
       status: "unlabeled",
       issues: [],
       note: "",
     }),
   });
+  const stillCurrent = state.currentIndex === episodeIndex && requestId === state.labelRequest;
   state.counts = result.counts;
   state.users = result.users || state.users;
   renderSummary(result.counts);
-  renderLabelForm(result.label);
-  if (state.current) {
+  if (stillCurrent) {
+    renderLabelForm(result.label);
+  }
+  if (stillCurrent && state.current) {
     state.current.label = result.label;
     state.current.summary = result.summary || {
       ...state.current.summary,
       status: "pending",
     };
   }
-  renderHeader(state.current);
-  updateEpisodeInList(state.currentIndex, result.label, result.episode_label_summary, result.summary);
-  setSaveState("已清除");
+  if (stillCurrent) {
+    renderHeader(state.current);
+  }
+  updateEpisodeInList(episodeIndex, result.label, result.episode_label_summary, result.summary);
+  if (stillCurrent) {
+    setSaveState("已清除");
+  }
 }
 
 async function cycleStatus(delta) {
@@ -2957,9 +3016,9 @@ function finishPhoneSwipe(point, id) {
   }
   state.phoneSuppressClickUntil = performance.now() + 450;
   if (absX > absY) {
-    runWithErrors(() => cycleStatus(dx > 0 ? 1 : -1));
+    enqueueUserAction(() => cycleStatus(dx > 0 ? 1 : -1));
   } else {
-    runWithErrors(() => moveEpisode(dy < 0 ? 1 : -1));
+    enqueueUserAction(() => moveEpisode(dy < 0 ? 1 : -1));
   }
 }
 
@@ -3103,28 +3162,32 @@ function bindEvents() {
     }
   });
 
-  el.episodeList?.addEventListener("click", async (event) => {
+  el.episodeList?.addEventListener("click", (event) => {
     const button = event.target.closest(".episode-item");
     if (!button) {
       return;
     }
-    await runWithErrors(() => selectEpisode(Number(button.dataset.index)));
+    enqueueUserAction(() => selectEpisode(Number(button.dataset.index)));
   });
 
-  el.prevPageButton?.addEventListener("click", async () => {
+  el.prevPageButton?.addEventListener("click", () => {
     if (state.page > 1) {
-      releaseCurrentPresence();
-      state.page -= 1;
-      await runWithErrors(() => loadEpisodes({ keepSelection: false }));
+      enqueueUserAction(async () => {
+        releaseCurrentPresence();
+        state.page -= 1;
+        await loadEpisodes({ keepSelection: false });
+      });
     }
   });
 
-  el.nextPageButton?.addEventListener("click", async () => {
+  el.nextPageButton?.addEventListener("click", () => {
     const pageCount = Math.max(1, Math.ceil(state.total / state.pageSize));
     if (state.page < pageCount) {
-      releaseCurrentPresence();
-      state.page += 1;
-      await runWithErrors(() => loadEpisodes({ keepSelection: false }));
+      enqueueUserAction(async () => {
+        releaseCurrentPresence();
+        state.page += 1;
+        await loadEpisodes({ keepSelection: false });
+      });
     }
   });
 
@@ -3193,11 +3256,11 @@ function bindEvents() {
     }
   });
 
-  el.rejectButton?.addEventListener("click", () => runWithErrors(() => saveLabel("reject")));
-  el.pendingButton?.addEventListener("click", () => runWithErrors(() => saveLabel("pending")));
-  el.acceptButton?.addEventListener("click", () => runWithErrors(() => saveLabel("accept")));
-  el.saveButton?.addEventListener("click", () => runWithErrors(() => saveLabel(state.selectedStatus)));
-  el.clearButton?.addEventListener("click", () => runWithErrors(clearLabel));
+  el.rejectButton?.addEventListener("click", () => enqueueUserAction(() => saveLabel("reject")));
+  el.pendingButton?.addEventListener("click", () => enqueueUserAction(() => saveLabel("pending")));
+  el.acceptButton?.addEventListener("click", () => enqueueUserAction(() => saveLabel("accept")));
+  el.saveButton?.addEventListener("click", () => enqueueUserAction(() => saveLabel(state.selectedStatus)));
+  el.clearButton?.addEventListener("click", () => enqueueUserAction(clearLabel));
 
   window.addEventListener("pointerdown", primeEffectAudio, { once: true, capture: true });
   window.addEventListener("keydown", primeEffectAudio, { once: true, capture: true });
@@ -3220,13 +3283,13 @@ function bindEvents() {
       return;
     }
     if (event.key === "ArrowRight") {
-      await runWithErrors(() => cycleStatus(1));
+      enqueueUserAction(() => cycleStatus(1));
     } else if (event.key === "ArrowLeft") {
-      await runWithErrors(() => cycleStatus(-1));
+      enqueueUserAction(() => cycleStatus(-1));
     } else if (event.key === "ArrowDown") {
-      await runWithErrors(() => moveEpisode(1));
+      enqueueUserAction(() => moveEpisode(1));
     } else if (event.key === "ArrowUp") {
-      await runWithErrors(() => moveEpisode(-1));
+      enqueueUserAction(() => moveEpisode(-1));
     } else if (event.key.toLowerCase() === "r") {
       const target = event.target;
       const editing = ["INPUT", "TEXTAREA", "SELECT"].includes(target.tagName);
@@ -3234,7 +3297,7 @@ function bindEvents() {
         return;
       }
       event.preventDefault();
-      await runWithErrors(() => saveLabel("reject"));
+      enqueueUserAction(() => saveLabel("reject"));
     } else if (event.key.toLowerCase() === "p") {
       const target = event.target;
       const editing = ["INPUT", "TEXTAREA", "SELECT"].includes(target.tagName);
@@ -3242,7 +3305,7 @@ function bindEvents() {
         return;
       }
       event.preventDefault();
-      await runWithErrors(() => saveLabel("pending"));
+      enqueueUserAction(() => saveLabel("pending"));
     } else if (event.key.toLowerCase() === "a") {
       const target = event.target;
       const editing = ["INPUT", "TEXTAREA", "SELECT"].includes(target.tagName);
@@ -3250,7 +3313,7 @@ function bindEvents() {
         return;
       }
       event.preventDefault();
-      await runWithErrors(() => saveLabel("accept"));
+      enqueueUserAction(() => saveLabel("accept"));
     } else if (event.key === " ") {
       const target = event.target;
       const editing = ["INPUT", "TEXTAREA", "SELECT"].includes(target.tagName);
@@ -3283,6 +3346,20 @@ async function runWithErrors(fn) {
   } catch (error) {
     setSaveState(error.message || String(error), true);
   }
+}
+
+function enqueueUserAction(fn) {
+  state.userActionPending += 1;
+  const run = state.userActionQueue
+    .catch(() => {})
+    .then(async () => {
+      await runWithErrors(fn);
+    })
+    .finally(() => {
+      state.userActionPending = Math.max(0, state.userActionPending - 1);
+    });
+  state.userActionQueue = run;
+  return run;
 }
 
 function animationLoop(now = 0) {
