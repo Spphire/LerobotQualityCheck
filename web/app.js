@@ -1443,7 +1443,7 @@ function normalizeVector(vector) {
   return [vector[0] / length, vector[1] / length, vector[2] / length];
 }
 
-function cameraFromHeadMinusZ(trajectory) {
+function cameraFromHeadDefaultAxis(trajectory) {
   const points = trajectory.ego?.points || [];
   const quaternions = trajectory.ego?.quaternions || [];
   const firstPose = points
@@ -1456,17 +1456,24 @@ function cameraFromHeadMinusZ(trajectory) {
   if (!firstPose) {
     return fallback;
   }
-  const headMinusZ = normalizeVector(rotateVectorByQuat([0, 0, -1], firstPose.quat));
-  if (!headMinusZ) {
+  const transform = String(trajectory.metadata?.transform || "");
+  const deviceType = String(trajectory.device_type || trajectory.metadata?.device_type || "").toLowerCase();
+  const collectionMode = String(trajectory.metadata?.collection_mode || "").toLowerCase();
+  const isTeleop = transform === "teleop_rx_minus_90"
+    || deviceType.includes("teleoperation")
+    || collectionMode.includes("teleoperation");
+  const headLocalAxis = isTeleop ? [0, 0, 1] : [0, 0, -1];
+  const viewDirection = normalizeVector(rotateVectorByQuat(headLocalAxis, firstPose.quat));
+  if (!viewDirection) {
     return fallback;
   }
   const distance = 1.75;
   return {
     up: { x: 0, y: 1, z: 0 },
     eye: {
-      x: -headMinusZ[0] * distance,
-      y: -headMinusZ[1] * distance,
-      z: -headMinusZ[2] * distance,
+      x: -viewDirection[0] * distance,
+      y: -viewDirection[1] * distance,
+      z: -viewDirection[2] * distance,
     },
   };
 }
@@ -1636,7 +1643,7 @@ function renderTrajectory3DPlotlyLegacy(trajectory) {
   state.trajectoryHighlightTraceIndexes = Array.from({ length: 12 }, (_, index) => highlightStart + index);
   state.lastTrajectoryHighlightFrame = null;
   state.lastTrajectoryHighlightAt = 0;
-  state.trajectoryCamera = cloneTrajectoryCamera(cameraFromHeadMinusZ(trajectory));
+  state.trajectoryCamera = cloneTrajectoryCamera(cameraFromHeadDefaultAxis(trajectory));
   state.trajectoryCameraRevision = 0;
   const axisRanges = trajectoryAxisRanges(trajectory);
   const axisStyle = {
@@ -2053,7 +2060,7 @@ function createTrajectoryView(trajectory) {
     Math.max(bounds.span * 30, 10),
   );
   camera.up.set(0, 1, 0);
-  const cameraEye = cameraFromHeadMinusZ(trajectory).eye;
+  const cameraEye = cameraFromHeadDefaultAxis(trajectory).eye;
   const eyeVector = new Three3D.Vector3(cameraEye.x, cameraEye.y, cameraEye.z);
   if (eyeVector.lengthSq() < 1e-8) {
     eyeVector.set(1.35, 0.85, 1.35);
