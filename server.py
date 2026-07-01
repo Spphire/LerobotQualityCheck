@@ -2259,6 +2259,8 @@ class QCRequestHandler(BaseHTTPRequestHandler):
                 self.handle_static(method, parsed, default_file="admin_review.html")
             elif parsed.path in {"/rank", "/rank/"}:
                 self.handle_static(method, parsed, default_file="rank.html")
+            elif parsed.path in {"/phone", "/phone/"}:
+                self.handle_static(method, parsed, default_file="phone.html")
             else:
                 self.handle_static(method, parsed)
         except AppError as exc:
@@ -2668,6 +2670,8 @@ class QCRequestHandler(BaseHTTPRequestHandler):
         elif path in {"/admin/review", "/admin/review/"}:
             rel = default_file
         elif path in {"/rank", "/rank/"}:
+            rel = default_file
+        elif path in {"/phone", "/phone/"}:
             rel = default_file
         else:
             rel = posixpath.normpath(path.lstrip("/"))

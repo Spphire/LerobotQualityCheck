@@ -31,8 +31,10 @@ const ISSUE_OPTIONS = [
 const urlParams = new URLSearchParams(window.location.search);
 const IS_ADMIN_REVIEW = window.location.pathname.startsWith("/admin/review")
   || document.body?.dataset.mode === "admin-review";
+const IS_PHONE = window.location.pathname.startsWith("/phone")
+  || document.body?.dataset.mode === "phone";
 const USER_STORAGE_KEY = IS_ADMIN_REVIEW ? "lqcp.adminReview.user" : "lqcp.user";
-const PAGE_STORAGE_KEY = IS_ADMIN_REVIEW ? "lqcp.adminReview.page" : "lqcp.page";
+const PAGE_STORAGE_KEY = IS_ADMIN_REVIEW ? "lqcp.adminReview.page" : IS_PHONE ? "lqcp.phone.page" : "lqcp.page";
 
 const tokenFromUrl = urlParams.get("token");
 if (tokenFromUrl) {
@@ -51,6 +53,7 @@ const initialEpisodeIndex = parseInt(urlParams.get("episode_index") || "", 10);
 
 const state = {
   adminReview: IS_ADMIN_REVIEW,
+  phone: IS_PHONE,
   token: tokenFromUrl || window.localStorage.getItem("lqcp.token") || "",
   user: userFromUrl || storedUser || defaultUser,
   datasetPath: datasetFromUrl || DEFAULT_DATASET,
@@ -93,6 +96,8 @@ const state = {
   reviveAssetAudioReady: false,
   reviveAssetAudioFailed: false,
   reviveTotemAssetReady: false,
+  phoneSwipe: null,
+  phoneSuppressClickUntil: 0,
 };
 
 let Three3D = null;
@@ -165,6 +170,9 @@ function initElements() {
     "reviveCollectorName",
     "reviveTotemAsset",
     "hiddenVideos",
+    "phoneSettingsButton",
+    "phoneDrawer",
+    "phoneDrawerCloseButton",
   ].forEach((id) => {
     el[id] = $(id);
   });
@@ -359,15 +367,28 @@ function setSelectedIssues(issues = []) {
 function renderSummary(counts) {
   const total = counts?.total || 0;
   const marked = counts?.marked || 0;
-  el.totalCount.textContent = formatNumber(total);
-  el.markedCount.textContent = formatNumber(marked);
-  el.rejectCount.textContent = formatNumber(counts?.reject || 0);
-  el.allMarkedCount.textContent = formatNumber(counts?.all_marked || 0);
+  if (el.totalCount) {
+    el.totalCount.textContent = formatNumber(total);
+  }
+  if (el.markedCount) {
+    el.markedCount.textContent = formatNumber(marked);
+  }
+  if (el.rejectCount) {
+    el.rejectCount.textContent = formatNumber(counts?.reject || 0);
+  }
+  if (el.allMarkedCount) {
+    el.allMarkedCount.textContent = formatNumber(counts?.all_marked || 0);
+  }
   const percent = total > 0 ? Math.round((marked / total) * 100) : 0;
-  el.progressBar.style.width = `${percent}%`;
+  if (el.progressBar) {
+    el.progressBar.style.width = `${percent}%`;
+  }
 }
 
 function renderEpisodeList() {
+  if (!el.episodeList) {
+    return;
+  }
   if (!state.episodes.length) {
     el.episodeList.innerHTML = `<div class="empty-state">没有匹配的 episode</div>`;
     return;
@@ -406,9 +427,15 @@ function renderEpisodeList() {
 
 function renderPager() {
   const pageCount = Math.max(1, Math.ceil(state.total / state.pageSize));
-  el.pageInfo.textContent = `${state.page} / ${pageCount}`;
-  el.prevPageButton.disabled = state.page <= 1;
-  el.nextPageButton.disabled = state.page >= pageCount;
+  if (el.pageInfo) {
+    el.pageInfo.textContent = `${state.page} / ${pageCount}`;
+  }
+  if (el.prevPageButton) {
+    el.prevPageButton.disabled = state.page <= 1;
+  }
+  if (el.nextPageButton) {
+    el.nextPageButton.disabled = state.page >= pageCount;
+  }
 }
 
 function renderHeader(current) {
@@ -423,15 +450,23 @@ function renderHeader(current) {
     el.episodeMeta.textContent = "";
     return;
   }
-  el.episodeTitle.textContent = episode.episode_name || episodeName(episode.episode_index);
+  el.episodeTitle.textContent = state.phone
+    ? `Episode ${episode.episode_index}`
+    : episode.episode_name || episodeName(episode.episode_index);
   const task = episode.task_description || episode.task_annotation || (episode.tasks || []).join(" / ");
-  const bits = [
-    `index ${episode.episode_index}`,
-    `${formatNumber(episode.length)} frames`,
-    `${current.videos.length} videos`,
-    `user ${state.user}`,
-    task,
-  ].filter(Boolean);
+  const bits = state.phone
+    ? [
+      episode.episode_name || episodeName(episode.episode_index),
+      `${formatNumber(episode.length)} frames`,
+      task,
+    ].filter(Boolean)
+    : [
+      `index ${episode.episode_index}`,
+      `${formatNumber(episode.length)} frames`,
+      `${current.videos.length} videos`,
+      `user ${state.user}`,
+      task,
+    ].filter(Boolean);
   el.episodeMeta.textContent = bits.join(" · ");
 }
 
@@ -554,7 +589,7 @@ function renderStatusButtons() {
     ["pending", el.pendingButton],
     ["accept", el.acceptButton],
   ].forEach(([status, button]) => {
-    button.classList.toggle("active", state.selectedStatus === status);
+    button?.classList.toggle("active", state.selectedStatus === status);
   });
 }
 
@@ -847,7 +882,7 @@ function renderCameraCanvases(videos) {
         setHeadVideoSize(video.videoWidth / video.videoHeight);
       }
       syncQuickVideoAspect(index, video);
-      video.playbackRate = Number(el.speedSelect.value || 1);
+      video.playbackRate = Number(el.speedSelect?.value || 1);
       syncVideoTimes(true);
       drawQuickVideoCanvases();
     };
@@ -947,9 +982,11 @@ function syncQuickVideoAspect(index, video) {
   if (!video.videoWidth || !video.videoHeight) {
     return;
   }
+  const aspect = `${video.videoWidth} / ${video.videoHeight}`;
   quickVideoEntries().forEach(([key, quickVideo]) => {
     if (state.quickVideoIndexes[key] === index && quickVideo) {
-      quickVideo.style.setProperty("--video-aspect", `${video.videoWidth} / ${video.videoHeight}`);
+      quickVideo.style.setProperty("--video-aspect", aspect);
+      quickVideo.closest(".quick-video-card")?.style.setProperty("--video-aspect", aspect);
     }
   });
 }
@@ -2618,7 +2655,7 @@ function focusEpisodeNavigation() {
 }
 
 function applyPlaybackRate() {
-  const rate = Number(el.speedSelect.value || 1);
+  const rate = Number(el.speedSelect?.value || 1);
   state.hiddenVideos.forEach((video) => {
     if (video) {
       video.playbackRate = rate;
@@ -2662,7 +2699,7 @@ function debounce(fn, ms) {
 }
 
 async function jumpToSearchResult() {
-  const query = el.searchInput.value.trim();
+  const query = el.searchInput?.value.trim() || "";
   const requestId = state.searchRequest + 1;
   state.searchRequest = requestId;
   if (!query) {
@@ -2797,6 +2834,9 @@ function openWristVideoModal(side, ratio) {
 }
 
 function bindCurveHover(canvas, side) {
+  if (!canvas) {
+    return;
+  }
   canvas.addEventListener("mousemove", (event) => {
     const rect = canvas.getBoundingClientRect();
     state.curveHover[side] = {
@@ -2810,15 +2850,99 @@ function bindCurveHover(canvas, side) {
     drawGripperCurves();
   });
   canvas.addEventListener("click", (event) => {
+    if (state.phone && performance.now() < state.phoneSuppressClickUntil) {
+      return;
+    }
     openWristVideoModal(side, curveRatioFromEvent(canvas, event));
   });
+}
+
+function setPhoneDrawerOpen(open) {
+  if (!el.phoneDrawer) {
+    return;
+  }
+  el.phoneDrawer.classList.toggle("open", open);
+  el.phoneDrawer.setAttribute("aria-hidden", open ? "false" : "true");
+  el.phoneSettingsButton?.setAttribute("aria-expanded", open ? "true" : "false");
+  document.body.classList.toggle("phone-drawer-open", open);
+}
+
+function shouldIgnorePhoneSwipe(event) {
+  const target = event.target;
+  if (!(target instanceof Element)) {
+    return true;
+  }
+  if (el.videoModal && !el.videoModal.hidden) {
+    return true;
+  }
+  return Boolean(target.closest(
+    "button, input, select, textarea, a, .phone-drawer, .trajectory-panel, .video-modal",
+  ));
+}
+
+function bindPhoneControls() {
+  if (!state.phone) {
+    return;
+  }
+  el.phoneSettingsButton?.addEventListener("click", () => setPhoneDrawerOpen(true));
+  el.phoneDrawerCloseButton?.addEventListener("click", () => setPhoneDrawerOpen(false));
+  el.phoneDrawer?.addEventListener("click", (event) => {
+    if (event.target.closest("[data-phone-drawer-close]")) {
+      setPhoneDrawerOpen(false);
+    }
+  });
+  document.addEventListener("keydown", (event) => {
+    if (event.key === "Escape") {
+      setPhoneDrawerOpen(false);
+    }
+  });
+
+  const surface = document.querySelector(".phone-main");
+  surface?.addEventListener("pointerdown", (event) => {
+    if (shouldIgnorePhoneSwipe(event)) {
+      state.phoneSwipe = null;
+      return;
+    }
+    state.phoneSwipe = {
+      id: event.pointerId,
+      x: event.clientX,
+      y: event.clientY,
+      time: performance.now(),
+    };
+  }, { passive: true });
+  surface?.addEventListener("pointerup", (event) => {
+    const swipe = state.phoneSwipe;
+    state.phoneSwipe = null;
+    if (!swipe || swipe.id !== event.pointerId) {
+      return;
+    }
+    const dx = event.clientX - swipe.x;
+    const dy = event.clientY - swipe.y;
+    const absX = Math.abs(dx);
+    const absY = Math.abs(dy);
+    const elapsed = performance.now() - swipe.time;
+    if (elapsed > 1200 || Math.max(absX, absY) < 42 || Math.max(absX, absY) / Math.max(1, Math.min(absX, absY)) < 1.25) {
+      return;
+    }
+    state.phoneSuppressClickUntil = performance.now() + 450;
+    if (absX > absY) {
+      runWithErrors(() => cycleStatus(dx > 0 ? 1 : -1));
+    } else {
+      runWithErrors(() => moveEpisode(dy < 0 ? 1 : -1));
+    }
+  }, { passive: true });
+  surface?.addEventListener("pointercancel", () => {
+    state.phoneSwipe = null;
+  }, { passive: true });
 }
 
 function bindEvents() {
   if (el.datasetInput) {
     el.datasetInput.value = state.datasetPath;
   }
-  el.userInput.value = state.user;
+  if (el.userInput) {
+    el.userInput.value = state.user;
+  }
   if (el.statusFilter) {
     el.statusFilter.value = state.status;
   }
@@ -2841,11 +2965,11 @@ function bindEvents() {
   const debouncedApplyUserInput = debounce(() => {
     runWithErrors(applyUserInput);
   }, 360);
-  el.userInput.addEventListener("input", debouncedApplyUserInput);
-  el.userInput.addEventListener("change", () => {
+  el.userInput?.addEventListener("input", debouncedApplyUserInput);
+  el.userInput?.addEventListener("change", () => {
     runWithErrors(applyUserInput);
   });
-  el.userInput.addEventListener("keydown", (event) => {
+  el.userInput?.addEventListener("keydown", (event) => {
     if (event.key === "Enter") {
       event.preventDefault();
       runWithErrors(applyUserInput);
@@ -2885,15 +3009,15 @@ function bindEvents() {
   const debouncedEpisodeSearch = debounce(() => {
     runWithErrors(jumpToSearchResult);
   }, 420);
-  el.searchInput.addEventListener("input", debouncedEpisodeSearch);
-  el.searchInput.addEventListener("keydown", (event) => {
+  el.searchInput?.addEventListener("input", debouncedEpisodeSearch);
+  el.searchInput?.addEventListener("keydown", (event) => {
     if (event.key === "Enter") {
       event.preventDefault();
       runWithErrors(jumpToSearchResult);
     }
   });
 
-  el.episodeList.addEventListener("click", async (event) => {
+  el.episodeList?.addEventListener("click", async (event) => {
     const button = event.target.closest(".episode-item");
     if (!button) {
       return;
@@ -2901,7 +3025,7 @@ function bindEvents() {
     await runWithErrors(() => selectEpisode(Number(button.dataset.index)));
   });
 
-  el.prevPageButton.addEventListener("click", async () => {
+  el.prevPageButton?.addEventListener("click", async () => {
     if (state.page > 1) {
       releaseCurrentPresence();
       state.page -= 1;
@@ -2909,7 +3033,7 @@ function bindEvents() {
     }
   });
 
-  el.nextPageButton.addEventListener("click", async () => {
+  el.nextPageButton?.addEventListener("click", async () => {
     const pageCount = Math.max(1, Math.ceil(state.total / state.pageSize));
     if (state.page < pageCount) {
       releaseCurrentPresence();
@@ -2921,10 +3045,10 @@ function bindEvents() {
   el.exportJsonlButton?.addEventListener("click", () => downloadExport("jsonl"));
   el.exportCsvButton?.addEventListener("click", () => downloadExport("csv"));
 
-  el.playAllButton.addEventListener("click", playAll);
-  el.pauseAllButton.addEventListener("click", pauseAll);
-  el.restartAllButton.addEventListener("click", restartAll);
-  el.speedSelect.addEventListener("change", applyPlaybackRate);
+  el.playAllButton?.addEventListener("click", playAll);
+  el.pauseAllButton?.addEventListener("click", pauseAll);
+  el.restartAllButton?.addEventListener("click", restartAll);
+  el.speedSelect?.addEventListener("change", applyPlaybackRate);
   el.videoProgress?.addEventListener("pointerdown", () => {
     state.isDraggingProgress = true;
   });
@@ -2983,9 +3107,9 @@ function bindEvents() {
     }
   });
 
-  el.rejectButton.addEventListener("click", () => runWithErrors(() => saveLabel("reject")));
-  el.pendingButton.addEventListener("click", () => runWithErrors(() => saveLabel("pending")));
-  el.acceptButton.addEventListener("click", () => runWithErrors(() => saveLabel("accept")));
+  el.rejectButton?.addEventListener("click", () => runWithErrors(() => saveLabel("reject")));
+  el.pendingButton?.addEventListener("click", () => runWithErrors(() => saveLabel("pending")));
+  el.acceptButton?.addEventListener("click", () => runWithErrors(() => saveLabel("accept")));
   el.saveButton?.addEventListener("click", () => runWithErrors(() => saveLabel(state.selectedStatus)));
   el.clearButton?.addEventListener("click", () => runWithErrors(clearLabel));
 
@@ -3064,6 +3188,7 @@ function bindEvents() {
     drawGripperCurves();
     resizeTrajectoryPlot();
   });
+  bindPhoneControls();
 }
 
 async function runWithErrors(fn) {
