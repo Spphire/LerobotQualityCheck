@@ -1876,6 +1876,7 @@ def load_trajectory(dataset_path: Path, dataset: dict[str, Any], episode_index: 
         "timestamp",
         "frame_index",
         "observation.state",
+        "action",
         "observation.extra.left.raw_pose",
         "observation.extra.right.raw_pose",
         "observation.extra.ego.raw_pose",
@@ -1905,6 +1906,10 @@ def load_trajectory(dataset_path: Path, dataset: dict[str, Any], episode_index: 
     left_quats: list[list[float | None]] = []
     right_quats: list[list[float | None]] = []
     ego_quats: list[list[float | None]] = []
+    action_left_points: list[list[float | None]] = []
+    action_right_points: list[list[float | None]] = []
+    action_left_quats: list[list[float | None]] = []
+    action_right_quats: list[list[float | None]] = []
     left_gripper: list[float | None] = []
     right_gripper: list[float | None] = []
     masks = {"left": [], "right": [], "ego": []}
@@ -1914,6 +1919,7 @@ def load_trajectory(dataset_path: Path, dataset: dict[str, Any], episode_index: 
 
     for row_index, row in enumerate(rows[::stride]):
         state = row.get("observation.state")
+        action = row.get("action")
         frame = row.get("frame_index")
         frames.append(int(frame) if frame is not None else row_index * stride)
         timestamps.append(clean_float(row.get("timestamp")))
@@ -1924,6 +1930,10 @@ def load_trajectory(dataset_path: Path, dataset: dict[str, Any], episode_index: 
         left_quat = quat_from_state(state, 3)
         right_quat = quat_from_state(state, 11)
         ego_quat = quat_from_state(state, 19)
+        action_left = point_from_state(action, 0)
+        action_right = point_from_state(action, 8)
+        action_left_quat = quat_from_state(action, 3)
+        action_right_quat = quat_from_state(action, 11)
         if left[0] is None:
             left = point_from_pose(row.get("observation.extra.left.raw_pose"))
             left_quat = quat_from_pose(row.get("observation.extra.left.raw_pose"))
@@ -1938,9 +1948,13 @@ def load_trajectory(dataset_path: Path, dataset: dict[str, Any], episode_index: 
             left = teleop_point_to_robopocket(left)
             right = teleop_point_to_robopocket(right)
             ego = teleop_point_to_robopocket(ego)
+            action_left = teleop_point_to_robopocket(action_left)
+            action_right = teleop_point_to_robopocket(action_right)
             left_quat = teleop_quat_to_robopocket(left_quat)
             right_quat = teleop_quat_to_robopocket(right_quat)
             ego_quat = teleop_quat_to_robopocket(ego_quat)
+            action_left_quat = teleop_quat_to_robopocket(action_left_quat)
+            action_right_quat = teleop_quat_to_robopocket(action_right_quat)
 
         left_points.append(left)
         right_points.append(right)
@@ -1948,9 +1962,15 @@ def load_trajectory(dataset_path: Path, dataset: dict[str, Any], episode_index: 
         left_quats.append(left_quat)
         right_quats.append(right_quat)
         ego_quats.append(ego_quat)
+        action_left_points.append(action_left)
+        action_right_points.append(action_right)
+        action_left_quats.append(action_left_quat)
+        action_right_quats.append(action_right_quat)
         update_ranges(ranges, left)
         update_ranges(ranges, right)
         update_ranges(ranges, ego)
+        update_ranges(ranges, action_left)
+        update_ranges(ranges, action_right)
 
         left_hand = clean_float(row.get("observation.extra.left.hand_state"))
         right_hand = clean_float(row.get("observation.extra.right.hand_state"))
@@ -1978,6 +1998,10 @@ def load_trajectory(dataset_path: Path, dataset: dict[str, Any], episode_index: 
         "timestamps": timestamps,
         "left": {"points": left_points, "quaternions": left_quats, "gripper": left_gripper},
         "right": {"points": right_points, "quaternions": right_quats, "gripper": right_gripper},
+        "action": {
+            "left": {"points": action_left_points, "quaternions": action_left_quats},
+            "right": {"points": action_right_points, "quaternions": action_right_quats},
+        },
         "ego": {"points": ego_points, "quaternions": ego_quats},
         "ranges": ranges,
         "masks": masks,

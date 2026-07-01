@@ -667,7 +667,9 @@ canvas {
   right: 12px;
   bottom: 10px;
   display: flex;
+  flex-wrap: wrap;
   gap: 10px;
+  max-width: min(360px, calc(100% - 24px));
   padding: 6px 8px;
   border: 1px solid rgba(255, 255, 255, 0.16);
   border-radius: 8px;
@@ -686,12 +688,20 @@ canvas {
   content: "";
 }
 
-.legend-left::before {
+.legend-left-state::before {
   background: #22c55e;
 }
 
-.legend-right::before {
+.legend-left-action::before {
+  background: #2dd4bf;
+}
+
+.legend-right-state::before {
   background: #ef4444;
+}
+
+.legend-right-action::before {
+  background: #f59e0b;
 }
 
 .legend-ego::before {

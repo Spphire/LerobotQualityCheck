@@ -1261,6 +1261,8 @@ function trajectoryAxisRanges(trajectory) {
   const points = [
     ...compactPoints(trajectory.left?.points || []),
     ...compactPoints(trajectory.right?.points || []),
+    ...compactPoints(trajectory.action?.left?.points || []),
+    ...compactPoints(trajectory.action?.right?.points || []),
   ];
   const fallback = [-1, 1];
   if (!points.length) {
@@ -1875,11 +1877,11 @@ function replaceObjectGeometry(object, geometry) {
   previous?.dispose?.();
 }
 
-function addTrajectoryTube(scene, points, colors, radius) {
+function addTrajectoryTube(scene, points, color, radius, opacity = 0.86) {
   const core = createTubeMesh(
     points,
     radius,
-    createMeshMaterial(colors.core, 0.86, false),
+    createMeshMaterial(color, opacity, false),
   );
   scene.add(core);
 }
@@ -2035,14 +2037,14 @@ function createTrajectoryView(trajectory) {
 
   const radius = Math.max(bounds.span * 0.0025, 0.0018);
   const markerRadius = Math.max(bounds.span * 0.011, 0.0045);
-  addTrajectoryTube(scene, trajectory.left?.points || [], {
-    core: 0x4ade80,
-  }, radius);
-  addTrajectoryTube(scene, trajectory.right?.points || [], {
-    core: 0xfb7185,
-  }, radius);
+  addTrajectoryTube(scene, trajectory.left?.points || [], 0x4ade80, radius, 0.9);
+  addTrajectoryTube(scene, trajectory.action?.left?.points || [], 0x2dd4bf, radius * 0.72, 0.82);
+  addTrajectoryTube(scene, trajectory.right?.points || [], 0xfb7185, radius, 0.9);
+  addTrajectoryTube(scene, trajectory.action?.right?.points || [], 0xf59e0b, radius * 0.72, 0.82);
   addEndpointMarkers(scene, trajectory.left?.points || [], 0x4ade80, markerRadius * 0.8);
+  addEndpointMarkers(scene, trajectory.action?.left?.points || [], 0x2dd4bf, markerRadius * 0.56);
   addEndpointMarkers(scene, trajectory.right?.points || [], 0xfb7185, markerRadius * 0.8);
+  addEndpointMarkers(scene, trajectory.action?.right?.points || [], 0xf59e0b, markerRadius * 0.56);
 
   const camera = new Three3D.PerspectiveCamera(
     45,
