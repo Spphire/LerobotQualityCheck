@@ -106,6 +106,53 @@ let trajectoryView = null;
 
 const el = {};
 
+const TRAJECTORY_SERIES_CONFIG = [
+  {
+    id: "leftState",
+    cssClass: "legend-left-state",
+    label: "左 state",
+    getData: (trajectory) => trajectory.left,
+    colors: { glow: 0x22c55e, core: 0x4ade80, marker: 0x4ade80 },
+    radiusScale: 1,
+    endpointScale: 0.8,
+    opacity: 0.9,
+    glowOpacity: 0.24,
+  },
+  {
+    id: "leftAction",
+    cssClass: "legend-left-action",
+    label: "左 action",
+    getData: (trajectory) => trajectory.action?.left,
+    colors: { glow: 0x14b8a6, core: 0x2dd4bf, marker: 0x2dd4bf },
+    radiusScale: 0.72,
+    endpointScale: 0.56,
+    opacity: 0.82,
+    glowOpacity: 0.18,
+  },
+  {
+    id: "rightState",
+    cssClass: "legend-right-state",
+    label: "右 state",
+    getData: (trajectory) => trajectory.right,
+    colors: { glow: 0xf43f5e, core: 0xfb7185, marker: 0xfb7185 },
+    radiusScale: 1,
+    endpointScale: 0.8,
+    opacity: 0.9,
+    glowOpacity: 0.24,
+  },
+  {
+    id: "rightAction",
+    cssClass: "legend-right-action",
+    label: "右 action",
+    getData: (trajectory) => trajectory.action?.right,
+    colors: { glow: 0xf59e0b, core: 0xfbbf24, marker: 0xf59e0b },
+    radiusScale: 0.72,
+    endpointScale: 0.56,
+    opacity: 0.82,
+    glowOpacity: 0.18,
+  },
+];
+
 function $(id) {
   return document.getElementById(id);
 }
@@ -175,6 +222,17 @@ function initElements() {
     "phoneDrawerCloseButton",
   ].forEach((id) => {
     el[id] = $(id);
+  });
+}
+
+function renderTrajectoryLegends() {
+  document.querySelectorAll(".trajectory-legend").forEach((legend) => {
+    legend.replaceChildren(...TRAJECTORY_SERIES_CONFIG.map((series) => {
+      const item = document.createElement("span");
+      item.className = series.cssClass;
+      item.textContent = series.label;
+      return item;
+    }));
   });
 }
 
@@ -1294,11 +1352,16 @@ function compactPoints(points = []) {
   return points.filter(validPoint);
 }
 
+function trajectorySeries(trajectory) {
+  return TRAJECTORY_SERIES_CONFIG.map((config) => ({
+    ...config,
+    data: config.getData(trajectory) || {},
+  }));
+}
+
 function trajectoryAxisRanges(trajectory) {
-  const points = [
-    ...compactPoints(trajectory.left?.points || []),
-    ...compactPoints(trajectory.right?.points || []),
-  ];
+  const points = trajectorySeries(trajectory)
+    .flatMap((series) => compactPoints(series.data.points || []));
   const fallback = [-1, 1];
   if (!points.length) {
     return { x: fallback, y: fallback, z: fallback };
@@ -1912,16 +1975,16 @@ function replaceObjectGeometry(object, geometry) {
   previous?.dispose?.();
 }
 
-function addTrajectoryTube(scene, points, colors, radius) {
+function addTrajectoryTube(scene, points, series, radius) {
   const glow = createTubeMesh(
     points,
-    radius * 4,
-    createMeshMaterial(colors.glow, 0.24, true),
+    radius * 4 * series.radiusScale,
+    createMeshMaterial(series.colors.glow, series.glowOpacity, true),
   );
   const core = createTubeMesh(
     points,
-    radius,
-    createMeshMaterial(colors.core, 0.86, false),
+    radius * series.radiusScale,
+    createMeshMaterial(series.colors.core, series.opacity, false),
   );
   scene.add(glow);
   scene.add(core);
@@ -2078,16 +2141,11 @@ function createTrajectoryView(trajectory) {
 
   const radius = Math.max(bounds.span * 0.0025, 0.0018);
   const markerRadius = Math.max(bounds.span * 0.011, 0.0045);
-  addTrajectoryTube(scene, trajectory.left?.points || [], {
-    glow: 0x22c55e,
-    core: 0x4ade80,
-  }, radius);
-  addTrajectoryTube(scene, trajectory.right?.points || [], {
-    glow: 0xf43f5e,
-    core: 0xfb7185,
-  }, radius);
-  addEndpointMarkers(scene, trajectory.left?.points || [], 0x4ade80, markerRadius * 0.8);
-  addEndpointMarkers(scene, trajectory.right?.points || [], 0xfb7185, markerRadius * 0.8);
+  trajectorySeries(trajectory).forEach((series) => {
+    const points = series.data.points || [];
+    addTrajectoryTube(scene, points, series, radius);
+    addEndpointMarkers(scene, points, series.colors.marker, markerRadius * series.endpointScale);
+  });
 
   const camera = new Three3D.PerspectiveCamera(
     45,
@@ -2879,6 +2937,47 @@ function shouldIgnorePhoneSwipe(event) {
   ));
 }
 
+function startPhoneSwipe(event, point, id) {
+  if (!point || shouldIgnorePhoneSwipe(event)) {
+    state.phoneSwipe = null;
+    return;
+  }
+  state.phoneSwipe = {
+    id,
+    x: point.clientX,
+    y: point.clientY,
+    time: performance.now(),
+  };
+}
+
+function finishPhoneSwipe(point, id) {
+  const swipe = state.phoneSwipe;
+  if (!point || !swipe || swipe.id !== id) {
+    return;
+  }
+  state.phoneSwipe = null;
+  const dx = point.clientX - swipe.x;
+  const dy = point.clientY - swipe.y;
+  const absX = Math.abs(dx);
+  const absY = Math.abs(dy);
+  const elapsed = performance.now() - swipe.time;
+  if (elapsed > 1200 || Math.max(absX, absY) < 42 || Math.max(absX, absY) / Math.max(1, Math.min(absX, absY)) < 1.25) {
+    return;
+  }
+  state.phoneSuppressClickUntil = performance.now() + 450;
+  if (absX > absY) {
+    runWithErrors(() => cycleStatus(dx > 0 ? 1 : -1));
+  } else {
+    runWithErrors(() => moveEpisode(dy < 0 ? 1 : -1));
+  }
+}
+
+function cancelPhoneSwipe(id = null) {
+  if (id === null || state.phoneSwipe?.id === id) {
+    state.phoneSwipe = null;
+  }
+}
+
 function bindPhoneControls() {
   if (!state.phone) {
     return;
@@ -2898,40 +2997,37 @@ function bindPhoneControls() {
 
   const surface = document.querySelector(".phone-main");
   surface?.addEventListener("pointerdown", (event) => {
-    if (shouldIgnorePhoneSwipe(event)) {
-      state.phoneSwipe = null;
+    if (event.pointerType === "touch") {
       return;
     }
-    state.phoneSwipe = {
-      id: event.pointerId,
-      x: event.clientX,
-      y: event.clientY,
-      time: performance.now(),
-    };
+    startPhoneSwipe(event, event, event.pointerId);
   }, { passive: true });
   surface?.addEventListener("pointerup", (event) => {
-    const swipe = state.phoneSwipe;
-    state.phoneSwipe = null;
-    if (!swipe || swipe.id !== event.pointerId) {
+    if (event.pointerType === "touch") {
       return;
     }
-    const dx = event.clientX - swipe.x;
-    const dy = event.clientY - swipe.y;
-    const absX = Math.abs(dx);
-    const absY = Math.abs(dy);
-    const elapsed = performance.now() - swipe.time;
-    if (elapsed > 1200 || Math.max(absX, absY) < 42 || Math.max(absX, absY) / Math.max(1, Math.min(absX, absY)) < 1.25) {
-      return;
-    }
-    state.phoneSuppressClickUntil = performance.now() + 450;
-    if (absX > absY) {
-      runWithErrors(() => cycleStatus(dx > 0 ? 1 : -1));
-    } else {
-      runWithErrors(() => moveEpisode(dy < 0 ? 1 : -1));
+    finishPhoneSwipe(event, event.pointerId);
+  }, { passive: true });
+  surface?.addEventListener("pointercancel", (event) => {
+    if (event.pointerType !== "touch") {
+      cancelPhoneSwipe(event.pointerId);
     }
   }, { passive: true });
-  surface?.addEventListener("pointercancel", () => {
-    state.phoneSwipe = null;
+  surface?.addEventListener("touchstart", (event) => {
+    const touch = event.changedTouches?.[0] || event.touches?.[0];
+    startPhoneSwipe(event, touch, touch?.identifier ?? "touch");
+  }, { passive: true });
+  surface?.addEventListener("touchend", (event) => {
+    const swipe = state.phoneSwipe;
+    const changed = Array.from(event.changedTouches || []);
+    const touch = changed.find((item) => item.identifier === swipe?.id) || changed[0];
+    finishPhoneSwipe(touch, touch?.identifier ?? "touch");
+  }, { passive: true });
+  surface?.addEventListener("touchcancel", (event) => {
+    const swipe = state.phoneSwipe;
+    const changed = Array.from(event.changedTouches || []);
+    const touch = changed.find((item) => item.identifier === swipe?.id) || changed[0];
+    cancelPhoneSwipe(touch?.identifier ?? "touch");
   }, { passive: true });
 }
 
@@ -3212,6 +3308,7 @@ function animationLoop(now = 0) {
 async function main() {
   initElements();
   initReviveAssets();
+  renderTrajectoryLegends();
   renderIssueOptions();
   await loadUserSession();
   bindEvents();
