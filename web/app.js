@@ -112,46 +112,43 @@ const TRAJECTORY_SERIES_CONFIG = [
     cssClass: "legend-left-state",
     label: "左 state",
     getData: (trajectory) => trajectory.left,
-    colors: { glow: 0x22c55e, core: 0x4ade80, marker: 0x4ade80 },
+    colors: { core: 0x4ade80, marker: 0x4ade80 },
     radiusScale: 1,
     endpointScale: 0.8,
     opacity: 0.9,
-    glowOpacity: 0.24,
   },
   {
     id: "leftAction",
     cssClass: "legend-left-action",
     label: "左 action",
     getData: (trajectory) => trajectory.action?.left,
-    colors: { glow: 0x14b8a6, core: 0x2dd4bf, marker: 0x2dd4bf },
+    colors: { core: 0x2dd4bf, marker: 0x2dd4bf },
     radiusScale: 0.72,
     endpointScale: 0.56,
     opacity: 0.82,
-    glowOpacity: 0.18,
   },
   {
     id: "rightState",
     cssClass: "legend-right-state",
     label: "右 state",
     getData: (trajectory) => trajectory.right,
-    colors: { glow: 0xf43f5e, core: 0xfb7185, marker: 0xfb7185 },
+    colors: { core: 0xfb7185, marker: 0xfb7185 },
     radiusScale: 1,
     endpointScale: 0.8,
     opacity: 0.9,
-    glowOpacity: 0.24,
   },
   {
     id: "rightAction",
     cssClass: "legend-right-action",
     label: "右 action",
     getData: (trajectory) => trajectory.action?.right,
-    colors: { glow: 0xf59e0b, core: 0xfbbf24, marker: 0xf59e0b },
+    colors: { core: 0xfbbf24, marker: 0xf59e0b },
     radiusScale: 0.72,
     endpointScale: 0.56,
     opacity: 0.82,
-    glowOpacity: 0.18,
   },
 ];
+const PHONE_DEFAULT_PLAYBACK_RATE = 10;
 
 function $(id) {
   return document.getElementById(id);
@@ -940,7 +937,7 @@ function renderCameraCanvases(videos) {
         setHeadVideoSize(video.videoWidth / video.videoHeight);
       }
       syncQuickVideoAspect(index, video);
-      video.playbackRate = Number(el.speedSelect?.value || 1);
+      video.playbackRate = currentPlaybackRate();
       syncVideoTimes(true);
       drawQuickVideoCanvases();
     };
@@ -1115,7 +1112,7 @@ function syncVideoTimes(force = false) {
   }
   const ratio = currentVideoRatio();
   const now = performance.now();
-  const rate = Math.max(1, Number(el.speedSelect?.value || 1));
+  const rate = Math.max(1, currentPlaybackRate());
   const driftTolerance = Math.max(0.2, rate * 0.025);
   state.hiddenVideos.forEach((video) => {
     if (!video || video === master || !Number.isFinite(video.duration) || video.duration <= 0) {
@@ -1976,17 +1973,11 @@ function replaceObjectGeometry(object, geometry) {
 }
 
 function addTrajectoryTube(scene, points, series, radius) {
-  const glow = createTubeMesh(
-    points,
-    radius * 4 * series.radiusScale,
-    createMeshMaterial(series.colors.glow, series.glowOpacity, true),
-  );
   const core = createTubeMesh(
     points,
     radius * series.radiusScale,
     createMeshMaterial(series.colors.core, series.opacity, false),
   );
-  scene.add(glow);
   scene.add(core);
 }
 
@@ -2067,11 +2058,8 @@ function setAxisLineSegments(line, segments) {
 }
 
 function createDynamicHand(scene, colors, radius, markerRadius) {
-  const glowMaterial = createMeshMaterial(colors.flowGlow, 0.64, true);
-  glowMaterial.userData.baseOpacity = 0.64;
   const coreMaterial = createMeshMaterial(colors.flowCore, 0.96, true);
   coreMaterial.userData.baseOpacity = 0.96;
-  const flowGlow = createTubeMesh([], radius * 5.5, glowMaterial);
   const flowCore = createTubeMesh([], radius * 2.1, coreMaterial);
   const marker = new Three3D.Mesh(
     new Three3D.SphereGeometry(markerRadius, 20, 14),
@@ -2084,22 +2072,19 @@ function createDynamicHand(scene, colors, radius, markerRadius) {
     createAxisLine(0x35d06f),
     createAxisLine(0x38bdf8),
   ];
-  scene.add(flowGlow, flowCore, marker, ...axes);
+  scene.add(flowCore, marker, ...axes);
   return {
-    flowGlow,
     flowCore,
     marker,
     axes,
     radii: {
-      glow: radius * 5.5,
       core: radius * 2.1,
     },
-    pulseMaterials: [glowMaterial, coreMaterial],
+    pulseMaterials: [coreMaterial],
   };
 }
 
 function updateDynamicHand(hand, sample, quat) {
-  replaceObjectGeometry(hand.flowGlow, createTubeGeometry(sample.trail, hand.radii.glow));
   replaceObjectGeometry(hand.flowCore, createTubeGeometry(sample.trail, hand.radii.core));
   if (sample.point) {
     hand.marker.position.copy(pointToVector3(sample.point));
@@ -2173,12 +2158,10 @@ function createTrajectoryView(trajectory) {
   controls.update();
 
   const left = createDynamicHand(scene, {
-    flowGlow: 0x86efac,
     flowCore: 0xbbf7d0,
     marker: 0x22c55e,
   }, radius, markerRadius);
   const right = createDynamicHand(scene, {
-    flowGlow: 0xfda4af,
     flowCore: 0xffd1d8,
     marker: 0xef4444,
   }, radius, markerRadius);
@@ -2703,7 +2686,7 @@ async function moveEpisode(delta) {
 }
 
 function scrollCurrentIntoView() {
-  const item = el.episodeList.querySelector(`.episode-item[data-index="${state.currentIndex}"]`);
+  const item = el.episodeList?.querySelector(`.episode-item[data-index="${state.currentIndex}"]`);
   item?.scrollIntoView({ block: "nearest" });
 }
 
@@ -2711,8 +2694,16 @@ function focusEpisodeNavigation() {
   el.episodeList?.focus({ preventScroll: true });
 }
 
+function currentPlaybackRate() {
+  const configured = Number(el.speedSelect?.value);
+  if (Number.isFinite(configured) && configured > 0) {
+    return configured;
+  }
+  return state.phone ? PHONE_DEFAULT_PLAYBACK_RATE : 1;
+}
+
 function applyPlaybackRate() {
-  const rate = Number(el.speedSelect?.value || 1);
+  const rate = currentPlaybackRate();
   state.hiddenVideos.forEach((video) => {
     if (video) {
       video.playbackRate = rate;

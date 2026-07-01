@@ -1729,10 +1729,12 @@ body[data-mode="phone"] .quick-video {
   right: 0;
   bottom: 0;
   display: grid;
-  grid-template-rows: auto auto auto auto auto auto minmax(0, 1fr) auto auto;
+  grid-auto-rows: max-content;
+  align-content: start;
   gap: 10px;
   width: min(88vw, 380px);
   min-height: 0;
+  overflow-y: auto;
   padding: max(12px, env(safe-area-inset-top)) max(12px, env(safe-area-inset-right)) max(12px, env(safe-area-inset-bottom)) 12px;
   border-left: 1px solid var(--line);
   background: rgba(255, 255, 255, 0.86);
@@ -1787,32 +1789,9 @@ body[data-mode="phone"] .quick-video {
   gap: 8px;
 }
 
-.phone-status-panel .status-actions {
-  display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-}
-
-.phone-status-panel .status-actions button {
-  min-width: 0;
-}
-
 .phone-status-panel .keyboard-help {
   justify-content: flex-start;
   gap: 5px 10px;
-}
-
-.phone-video-controls .video-toolbar {
-  grid-template-columns: repeat(4, minmax(0, 1fr));
-  justify-content: stretch;
-}
-
-.phone-video-controls .progress-control {
-  grid-column: 1 / -1;
-  grid-template-columns: minmax(0, 1fr) 38px;
-}
-
-body[data-mode="phone"] .episode-list {
-  min-height: 0;
 }
 
 body[data-mode="phone"] .shortcut-panel {
