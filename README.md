@@ -295,3 +295,31 @@ node --check web/app.js
 ```text
 git@github.com:Spphire/LerobotQualityCheck.git
 ```
+
+## DM3 Source Metadata Lookup
+
+The collector cache can query DM3 by episode UUID before falling back to local
+raw metadata files. Configure one of these authentication modes before starting
+the service:
+
+```bash
+export LQCP_DM3_PHONE_NUMBER=<phone-number>
+export LQCP_DM3_PASSWORD=<password>
+# or use an existing bearer token:
+export LQCP_DM3_TOKEN=<token>
+```
+
+Relevant options:
+
+| Env var | Default | Description |
+|---|---:|---|
+| `LQCP_DM3_BASE_URL` | `https://dm3.noematrix.cn` | DM3 API base URL |
+| `LQCP_DM3_PHONE_NUMBER` / `LQCP_DM3_PHONE` | empty | Phone number for `POST /api/v1/auth/login-by-phone` |
+| `LQCP_DM3_PASSWORD` | empty | Password for DM3 login |
+| `LQCP_DM3_TOKEN` | empty | Pre-issued bearer token; skips login when set |
+| `LQCP_DM3_TIMEOUT` | `8` | DM3 request timeout in seconds |
+| `LQCP_RAW_METADATA_FALLBACK` | auto | When DM3 is configured, fallback is off by default; set `1` to also try local raw metadata |
+
+DM3 results are stored in `collector_cache` inside `labels.db`, including
+normalized `collector`, `seat`, `seat_number`, `device`, `device_id`,
+`device_identifier`, `task`, and a compact `metadata_json` copy for debugging.
