@@ -1170,11 +1170,51 @@ function quickVideoAspectValue(video, card) {
   return Number.isFinite(value) && value > 0 ? value : 16 / 9;
 }
 
+function cssPixelValue(style, property) {
+  const value = Number.parseFloat(style.getPropertyValue(property) || "0");
+  return Number.isFinite(value) ? value : 0;
+}
+
+function applyPhoneQuickVideoCardSize(card, video, contentWidth, videoHeight, cardWidth, cardHeight) {
+  const contentWidthPx = `${contentWidth}px`;
+  const videoHeightPx = `${videoHeight}px`;
+  const widthPx = `${cardWidth}px`;
+  const heightPx = `${cardHeight}px`;
+  card.style.setProperty("--phone-card-width", widthPx);
+  card.style.setProperty("--phone-card-height", heightPx);
+  card.style.setProperty("--phone-video-width", contentWidthPx);
+  card.style.setProperty("--phone-video-height", videoHeightPx);
+  card.style.width = widthPx;
+  card.style.minWidth = widthPx;
+  card.style.maxWidth = widthPx;
+  card.style.flexBasis = widthPx;
+  card.style.height = heightPx;
+  if (video) {
+    video.style.width = contentWidthPx;
+    video.style.minWidth = contentWidthPx;
+    video.style.maxWidth = contentWidthPx;
+    video.style.height = videoHeightPx;
+  }
+}
+
 function clearPhoneQuickVideoLayout(cards) {
   cards.forEach((card) => {
     card.style.removeProperty("--phone-card-width");
     card.style.removeProperty("--phone-card-height");
+    card.style.removeProperty("--phone-video-width");
     card.style.removeProperty("--phone-video-height");
+    card.style.width = "";
+    card.style.minWidth = "";
+    card.style.maxWidth = "";
+    card.style.flexBasis = "";
+    card.style.height = "";
+    const video = card.querySelector(".quick-video");
+    if (video) {
+      video.style.width = "";
+      video.style.minWidth = "";
+      video.style.maxWidth = "";
+      video.style.height = "";
+    }
   });
 }
 
@@ -1205,17 +1245,28 @@ function syncQuickVideoLayout() {
   if (!availableWidth || !availableHeight) {
     return;
   }
-  const headerHeight = Math.max(...cards.map(({ card }) => {
+  const measuredCards = cards.map((item) => {
+    const cardStyle = window.getComputedStyle(item.card);
+    return {
+      ...item,
+      borderX: cssPixelValue(cardStyle, "border-left-width") + cssPixelValue(cardStyle, "border-right-width"),
+      borderY: cssPixelValue(cardStyle, "border-top-width") + cssPixelValue(cardStyle, "border-bottom-width"),
+    };
+  });
+  const headerHeight = Math.max(...measuredCards.map(({ card }) => {
     const header = card.querySelector("header");
     return header?.getBoundingClientRect().height || 0;
   }), 0);
-  const aspectSum = cards.reduce((sum, item) => sum + item.aspect, 0);
-  const videoHeight = Math.max(1, Math.min(availableHeight - headerHeight, availableWidth / aspectSum));
-  const cardHeight = videoHeight + headerHeight;
-  cards.forEach(({ card, aspect }) => {
-    card.style.setProperty("--phone-video-height", `${videoHeight}px`);
-    card.style.setProperty("--phone-card-height", `${cardHeight}px`);
-    card.style.setProperty("--phone-card-width", `${videoHeight * aspect}px`);
+  const aspectSum = measuredCards.reduce((sum, item) => sum + item.aspect, 0);
+  const borderXSum = measuredCards.reduce((sum, item) => sum + item.borderX, 0);
+  const borderY = Math.max(...measuredCards.map((item) => item.borderY), 0);
+  const videoHeightByHeight = Math.max(1, availableHeight - headerHeight - borderY);
+  const videoHeightByWidth = Math.max(1, (availableWidth - borderXSum) / aspectSum);
+  const videoHeight = Math.max(1, Math.min(videoHeightByHeight, videoHeightByWidth));
+  const cardHeight = videoHeight + headerHeight + borderY;
+  measuredCards.forEach(({ card, video, aspect, borderX }) => {
+    const contentWidth = videoHeight * aspect;
+    applyPhoneQuickVideoCardSize(card, video, contentWidth, videoHeight, contentWidth + borderX, cardHeight);
   });
 }
 
@@ -1232,7 +1283,17 @@ function resetQuickVideoMediaLayout() {
       card.style.removeProperty("--video-aspect-value");
       card.style.removeProperty("--phone-card-width");
       card.style.removeProperty("--phone-card-height");
+      card.style.removeProperty("--phone-video-width");
       card.style.removeProperty("--phone-video-height");
+      card.style.width = "";
+      card.style.minWidth = "";
+      card.style.maxWidth = "";
+      card.style.flexBasis = "";
+      card.style.height = "";
+      video.style.width = "";
+      video.style.minWidth = "";
+      video.style.maxWidth = "";
+      video.style.height = "";
     }
   });
 }

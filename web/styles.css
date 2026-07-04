@@ -1708,17 +1708,20 @@ body[data-mode="phone"] .video-stream-inner {
 }
 
 body[data-mode="phone"] .quick-video-card {
-  flex: 0 0 var(--phone-card-width, calc((100% - 16px) / 3));
-  width: var(--phone-card-width, calc((100% - 16px) / 3));
+  flex: 0 0 var(--phone-card-width, auto);
+  width: var(--phone-card-width, auto);
+  min-width: var(--phone-card-width, 0);
+  max-width: var(--phone-card-width, none);
   height: var(--phone-card-height, 100%);
-  max-width: none;
   align-self: center;
   aspect-ratio: auto;
   grid-template-rows: 24px minmax(0, 1fr);
 }
 
 body[data-mode="phone"] .quick-video {
-  width: 100%;
+  width: var(--phone-video-width, 100%);
+  min-width: var(--phone-video-width, 0);
+  max-width: var(--phone-video-width, 100%);
   height: var(--phone-video-height, 100%);
   max-height: 100%;
   aspect-ratio: var(--video-aspect, 16 / 9);
