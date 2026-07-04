@@ -92,6 +92,7 @@ def main() -> int:
     parser.add_argument("--workers", type=int, default=4)
     parser.add_argument("--crf", type=int, default=28)
     parser.add_argument("--preset", default="veryfast")
+    parser.add_argument("--episode-index", type=int, action="append", default=[], help="Only build videos for this episode index; may be repeated.")
     parser.add_argument("--limit-videos", type=int, default=0)
     parser.add_argument("--overwrite", action="store_true")
     args = parser.parse_args()
@@ -99,6 +100,12 @@ def main() -> int:
     dataset_path = args.dataset.expanduser().resolve()
     output_root = args.output_root.expanduser().resolve() / dataset_id(dataset_path)
     inputs = video_inputs(dataset_path)
+    if args.episode_index:
+        wanted = set(args.episode_index)
+        inputs = [
+            path for path in inputs
+            if (match := EPISODE_RE.match(path.name)) and int(match.group(1)) in wanted
+        ]
     if args.limit_videos > 0:
         inputs = inputs[: args.limit_videos]
     print(f"dataset={dataset_path}")
