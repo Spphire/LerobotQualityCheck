@@ -24,6 +24,8 @@ from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path, PurePosixPath
 from typing import Any
+from urllib import error as urlerror
+from urllib import request as urlrequest
 from urllib.parse import parse_qs, unquote, urlencode, urlparse
 
 
@@ -38,6 +40,11 @@ ALLOWED_DATASET_ROOT = Path("/mnt").resolve()
 RAW_METADATA_TIMEOUT_SECONDS = float(os.environ.get("LQCP_RAW_METADATA_TIMEOUT", "3"))
 COLLECTOR_CACHE_WORKERS = max(1, int(os.environ.get("LQCP_COLLECTOR_CACHE_WORKERS", "3")))
 COLLECTOR_CACHE_NEGATIVE_TTL_SECONDS = int(os.environ.get("LQCP_COLLECTOR_CACHE_NEGATIVE_TTL", str(24 * 60 * 60)))
+DM3_BASE_URL = os.environ.get("LQCP_DM3_BASE_URL", "https://dm3.noematrix.cn").rstrip("/")
+DM3_PHONE_NUMBER = (os.environ.get("LQCP_DM3_PHONE_NUMBER") or os.environ.get("LQCP_DM3_PHONE") or "").strip()
+DM3_PASSWORD = os.environ.get("LQCP_DM3_PASSWORD", "")
+DM3_STATIC_TOKEN = os.environ.get("LQCP_DM3_TOKEN", "").strip()
+DM3_TIMEOUT_SECONDS = float(os.environ.get("LQCP_DM3_TIMEOUT", "8"))
 
 STATUS_VALUES = {"reject", "pending", "accept", "unlabeled"}
 STATUS_ALIASES = {"bad": "reject", "review": "pending", "good": "accept"}
@@ -58,12 +65,14 @@ COLLECTOR_QUEUE_SEQUENCE = 0
 EPISODE_PRESENCE: dict[str, dict[str, dict[str, float]]] = {}
 DATASET_CACHE_LOCK = threading.Lock()
 RAW_METADATA_LOCK = threading.Lock()
+DM3_TOKEN_LOCK = threading.Lock()
 COLLECTOR_CACHE_LOCK = threading.Lock()
 LABEL_LOCK = threading.Lock()
 PRESENCE_LOCK = threading.Lock()
 SETTINGS_LOCK = threading.Lock()
 USER_SESSION_LOCK = threading.Lock()
 SERVER_CONFIG: dict[str, Any] = {}
+DM3_TOKEN = DM3_STATIC_TOKEN
 
 
 class AppError(Exception):
@@ -95,6 +104,28 @@ def configured_raw_episode_roots() -> list[Path]:
 
 def raw_episode_roots_signature() -> str:
     return json.dumps([str(root) for root in configured_raw_episode_roots()], ensure_ascii=False)
+
+
+def dm3_enabled() -> bool:
+    return bool(DM3_STATIC_TOKEN or (DM3_PHONE_NUMBER and DM3_PASSWORD))
+
+
+def source_metadata_signature() -> str:
+    return json.dumps(
+        {
+            "dm3": {"enabled": dm3_enabled(), "base_url": DM3_BASE_URL if dm3_enabled() else ""},
+            "raw_roots": [str(root) for root in configured_raw_episode_roots()],
+        },
+        ensure_ascii=False,
+        sort_keys=True,
+    )
+
+
+def raw_metadata_fallback_enabled() -> bool:
+    value = os.environ.get("LQCP_RAW_METADATA_FALLBACK", "")
+    if value:
+        return value.strip().lower() not in {"0", "false", "no", "off"}
+    return not dm3_enabled()
 
 
 def utc_now() -> str:
@@ -456,6 +487,13 @@ def init_label_db(conn: sqlite3.Connection) -> None:
             episode_name TEXT NOT NULL DEFAULT '',
             episode_uuid TEXT NOT NULL DEFAULT '',
             collector TEXT NOT NULL DEFAULT '',
+            seat TEXT NOT NULL DEFAULT '',
+            seat_number TEXT NOT NULL DEFAULT '',
+            device TEXT NOT NULL DEFAULT '',
+            device_id TEXT NOT NULL DEFAULT '',
+            device_identifier TEXT NOT NULL DEFAULT '',
+            task TEXT NOT NULL DEFAULT '',
+            metadata_json TEXT NOT NULL DEFAULT '',
             raw_path TEXT NOT NULL DEFAULT '',
             metadata_path TEXT NOT NULL DEFAULT '',
             raw_roots TEXT NOT NULL DEFAULT '',
@@ -469,8 +507,18 @@ def init_label_db(conn: sqlite3.Connection) -> None:
         """
     )
     columns = {row["name"] for row in conn.execute("PRAGMA table_info(collector_cache)")}
-    if "raw_roots" not in columns:
-        conn.execute("ALTER TABLE collector_cache ADD COLUMN raw_roots TEXT NOT NULL DEFAULT ''")
+    for column_name in (
+        "seat",
+        "seat_number",
+        "device",
+        "device_id",
+        "device_identifier",
+        "task",
+        "metadata_json",
+        "raw_roots",
+    ):
+        if column_name not in columns:
+            conn.execute(f"ALTER TABLE collector_cache ADD COLUMN {column_name} TEXT NOT NULL DEFAULT ''")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_collector_cache_uuid ON collector_cache(dataset_id, episode_uuid)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_collector_cache_collector ON collector_cache(dataset_id, collector)")
     conn.commit()
@@ -1008,8 +1056,45 @@ def string_value(value: Any) -> str:
         parts = [string_value(item) for item in value]
         return ", ".join(part for part in parts if part)
     if isinstance(value, dict):
-        for key in ("name", "username", "user", "id", "uid"):
+        for key in ("name", "username", "user", "identifier", "device_identifier", "code", "number", "id", "uid"):
             text = string_value(value.get(key))
+            if text:
+                return text
+    return ""
+
+
+def first_metadata_value(payload: Any, keys: tuple[str, ...], max_depth: int = 6) -> str:
+    if max_depth < 0:
+        return ""
+    if isinstance(payload, dict):
+        for key in keys:
+            text = string_value(payload.get(key))
+            if text:
+                return text
+        for value in payload.values():
+            text = first_metadata_value(value, keys, max_depth - 1)
+            if text:
+                return text
+    elif isinstance(payload, list):
+        for item in payload:
+            text = first_metadata_value(item, keys, max_depth - 1)
+            if text:
+                return text
+    return ""
+
+
+def first_metadata_path_value(payload: dict[str, Any], paths: list[tuple[str, ...]]) -> str:
+    roots: list[Any] = [payload]
+    for key in ("data", "result", "raw_metadata", "metadata", "extra"):
+        value = payload.get(key)
+        if isinstance(value, dict):
+            roots.append(value)
+            extra = value.get("extra")
+            if isinstance(extra, dict):
+                roots.append(extra)
+    for root in roots:
+        for path in paths:
+            text = string_value(nested_lookup(root, path))
             if text:
                 return text
     return ""
@@ -1056,7 +1141,293 @@ def collector_from_metadata(metadata: dict[str, Any]) -> str:
         value = string_value(nested_lookup(metadata, path))
         if value:
             return value
+    return first_metadata_value(
+        metadata,
+        (
+            "collector",
+            "collector_name",
+            "collector_id",
+            "collector_username",
+            "collector_user_name",
+            "collect_user",
+            "collection_user",
+            "collection_operator",
+            "operator",
+            "operator_name",
+            "operator_id",
+            "created_by",
+            "creator",
+            "creator_name",
+            "author",
+            "owner",
+            "username",
+            "user_name",
+            "user_id",
+        ),
+    )
+
+
+def metadata_json_text(metadata: Any) -> str:
+    try:
+        return json.dumps(metadata, ensure_ascii=False, separators=(",", ":"), default=json_default)[:20000]
+    except (TypeError, ValueError):
+        return ""
+
+
+def metadata_task_from_metadata(metadata: dict[str, Any]) -> str:
+    return first_metadata_path_value(
+        metadata,
+        [
+            ("task_description",),
+            ("task_annotation",),
+            ("task_name",),
+            ("task", "name"),
+            ("task", "description"),
+            ("metadata", "task_description"),
+            ("metadata", "task_annotation"),
+            ("extra", "task_description"),
+            ("extra", "task_annotation"),
+        ],
+    ) or first_metadata_value(metadata, ("task_description", "task_annotation", "task_name"), max_depth=4)
+
+
+def seat_from_metadata(metadata: dict[str, Any]) -> tuple[str, str]:
+    seat = first_metadata_path_value(
+        metadata,
+        [
+            ("seat",),
+            ("seat_id",),
+            ("seat_no",),
+            ("seat_number",),
+            ("station",),
+            ("station_id",),
+            ("station_number",),
+            ("position",),
+            ("metadata", "seat"),
+            ("metadata", "seat_number"),
+            ("metadata", "station"),
+            ("extra", "seat"),
+            ("extra", "seat_number"),
+            ("extra", "station"),
+        ],
+    ) or first_metadata_value(
+        metadata,
+        ("seat", "seat_id", "seat_no", "seat_number", "station", "station_id", "station_number", "position"),
+    )
+    seat_number = first_metadata_path_value(
+        metadata,
+        [
+            ("seat_number",),
+            ("seat_no",),
+            ("seat", "number"),
+            ("station_number",),
+            ("station_no",),
+            ("metadata", "seat_number"),
+            ("extra", "seat_number"),
+        ],
+    ) or seat
+    return seat, seat_number
+
+
+def device_from_metadata(metadata: dict[str, Any]) -> tuple[str, str, str]:
+    device = first_metadata_path_value(
+        metadata,
+        [
+            ("device",),
+            ("devices",),
+            ("device_name",),
+            ("robot",),
+            ("robot_name",),
+            ("metadata", "device"),
+            ("metadata", "devices"),
+            ("extra", "device"),
+            ("extra", "devices"),
+        ],
+    ) or first_metadata_value(metadata, ("device", "devices", "device_name", "robot", "robot_name"), max_depth=4)
+    device_id = first_metadata_path_value(
+        metadata,
+        [
+            ("device_id",),
+            ("device_no",),
+            ("device_number",),
+            ("robot_id",),
+            ("robot_no",),
+            ("metadata", "device_id"),
+            ("extra", "device_id"),
+        ],
+    ) or first_metadata_value(metadata, ("device_id", "device_no", "device_number", "robot_id", "robot_no"))
+    device_identifier = first_metadata_path_value(
+        metadata,
+        [
+            ("device_identifier",),
+            ("identifier",),
+            ("indentifier",),
+            ("device", "identifier"),
+            ("device", "indentifier"),
+            ("robot", "identifier"),
+            ("metadata", "device_identifier"),
+            ("raw_metadata", "extra", "device"),
+            ("extra", "device_identifier"),
+            ("extra", "device"),
+        ],
+    ) or first_metadata_value(metadata, ("device_identifier", "identifier", "indentifier"), max_depth=5)
+    return device, device_id, device_identifier
+
+
+def source_metadata_from_payload(
+    episode_uuid: str,
+    metadata: dict[str, Any],
+    *,
+    metadata_path: str,
+    raw_path: str = "",
+) -> dict[str, Any]:
+    seat, seat_number = seat_from_metadata(metadata)
+    device, device_id, device_identifier = device_from_metadata(metadata)
+    return {
+        "episode_uuid": str(episode_uuid or "").strip().lower(),
+        "collector": collector_from_metadata(metadata),
+        "seat": seat,
+        "seat_number": seat_number,
+        "device": device,
+        "device_id": device_id,
+        "device_identifier": device_identifier,
+        "task": metadata_task_from_metadata(metadata),
+        "metadata_json": metadata_json_text(metadata),
+        "raw_path": raw_path,
+        "metadata_path": metadata_path,
+        "raw_roots": source_metadata_signature(),
+        "found": True,
+    }
+
+
+class DM3ApiError(RuntimeError):
+    pass
+
+
+def dm3_extract_payload(response: Any) -> dict[str, Any]:
+    if isinstance(response, dict):
+        data = response.get("data")
+        if isinstance(data, dict):
+            return data
+        result = response.get("result")
+        if isinstance(result, dict):
+            return result
+        return response
+    return {}
+
+
+def dm3_token_from_login_response(response: dict[str, Any]) -> str:
+    token = string_value(response.get("token"))
+    if token:
+        return token
+    data = response.get("data")
+    if isinstance(data, dict):
+        for key in ("token", "access_token", "accessToken"):
+            token = string_value(data.get(key))
+            if token:
+                return token
     return ""
+
+
+def dm3_http_json(
+    method: str,
+    path: str,
+    *,
+    params: dict[str, Any] | None = None,
+    payload: dict[str, Any] | None = None,
+    auth_required: bool = True,
+    refresh_on_unauthorized: bool = True,
+) -> dict[str, Any]:
+    global DM3_TOKEN
+    if not dm3_enabled():
+        raise DM3ApiError("DM3 is not configured")
+    url = f"{DM3_BASE_URL}{path}"
+    if params:
+        url = f"{url}?{urlencode({key: value for key, value in params.items() if value is not None})}"
+    body = None
+    headers = {"Accept": "application/json"}
+    if payload is not None:
+        body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+        headers["Content-Type"] = "application/json"
+    if auth_required:
+        token = dm3_get_token()
+        if not token:
+            raise DM3ApiError("DM3 token is empty")
+        headers["Authorization"] = f"Bearer {token}"
+    req = urlrequest.Request(url, data=body, method=method.upper(), headers=headers)
+    try:
+        with urlrequest.urlopen(req, timeout=DM3_TIMEOUT_SECONDS) as response:
+            raw_body = response.read()
+    except urlerror.HTTPError as exc:
+        if exc.code == 401 and auth_required and refresh_on_unauthorized and DM3_PHONE_NUMBER and DM3_PASSWORD:
+            with DM3_TOKEN_LOCK:
+                DM3_TOKEN = ""
+            return dm3_http_json(
+                method,
+                path,
+                params=params,
+                payload=payload,
+                auth_required=auth_required,
+                refresh_on_unauthorized=False,
+            )
+        error_body = ""
+        try:
+            error_body = exc.read().decode("utf-8", errors="replace")[:500]
+        except Exception:
+            error_body = ""
+        raise DM3ApiError(f"DM3 HTTP {exc.code}: {error_body}") from exc
+    except urlerror.URLError as exc:
+        raise DM3ApiError(f"DM3 network error: {exc.reason}") from exc
+    if not raw_body:
+        return {}
+    try:
+        parsed = json.loads(raw_body.decode("utf-8", errors="replace"))
+    except json.JSONDecodeError as exc:
+        raise DM3ApiError("DM3 response is not JSON") from exc
+    return parsed if isinstance(parsed, dict) else {"data": parsed}
+
+
+def dm3_login() -> str:
+    if DM3_STATIC_TOKEN:
+        return DM3_STATIC_TOKEN
+    if not DM3_PHONE_NUMBER or not DM3_PASSWORD:
+        raise DM3ApiError("DM3 phone/password are not configured")
+    response = dm3_http_json(
+        "POST",
+        "/api/v1/auth/login-by-phone",
+        payload={"phone_number": DM3_PHONE_NUMBER, "password": DM3_PASSWORD},
+        auth_required=False,
+    )
+    token = dm3_token_from_login_response(response)
+    if not token:
+        raise DM3ApiError("DM3 login response did not contain a token")
+    return token
+
+
+def dm3_get_token() -> str:
+    global DM3_TOKEN
+    if DM3_TOKEN:
+        return DM3_TOKEN
+    with DM3_TOKEN_LOCK:
+        if not DM3_TOKEN:
+            DM3_TOKEN = dm3_login()
+        return DM3_TOKEN
+
+
+def dm3_episode_metadata(episode_uuid: str) -> dict[str, Any]:
+    uuid = str(episode_uuid or "").strip().lower()
+    if not uuid or not dm3_enabled():
+        return {}
+    response = dm3_http_json("GET", "/api/v1/episode/metadata", params={"uuid": uuid})
+    metadata = dm3_extract_payload(response)
+    if not metadata:
+        return {}
+    return source_metadata_from_payload(
+        uuid,
+        metadata,
+        metadata_path=f"dm3:/api/v1/episode/metadata?uuid={uuid}",
+        raw_path="dm3:",
+    )
 
 
 def read_raw_metadata_with_timeout(metadata_path: Path) -> dict[str, Any] | None:
@@ -1119,23 +1490,28 @@ def raw_episode_metadata(episode_uuid: str) -> dict[str, Any]:
     result: dict[str, Any] = {
         "episode_uuid": uuid,
         "collector": "",
+        "seat": "",
+        "seat_number": "",
+        "device": "",
+        "device_id": "",
+        "device_identifier": "",
+        "task": "",
+        "metadata_json": "",
         "raw_path": "",
         "metadata_path": "",
-        "raw_roots": raw_episode_roots_signature(),
+        "raw_roots": source_metadata_signature(),
         "found": False,
     }
     for metadata_path in raw_metadata_candidate_paths(uuid):
         metadata = read_raw_metadata_with_timeout(metadata_path)
         if metadata is None:
             continue
-        result = {
-            "episode_uuid": uuid,
-            "collector": collector_from_metadata(metadata),
-            "raw_path": str(metadata_path.parents[1]),
-            "metadata_path": str(metadata_path),
-            "raw_roots": raw_episode_roots_signature(),
-            "found": True,
-        }
+        result = source_metadata_from_payload(
+            uuid,
+            metadata,
+            raw_path=str(metadata_path.parents[1]),
+            metadata_path=str(metadata_path),
+        )
         break
 
     if result.get("found"):
@@ -1160,6 +1536,13 @@ def collector_cache_row_to_payload(row: sqlite3.Row) -> dict[str, Any]:
     return {
         "episode_uuid": row["episode_uuid"],
         "collector": row["collector"],
+        "seat": row["seat"],
+        "seat_number": row["seat_number"],
+        "device": row["device"],
+        "device_id": row["device_id"],
+        "device_identifier": row["device_identifier"],
+        "task": row["task"],
+        "metadata_json": row["metadata_json"],
         "raw_path": row["raw_path"],
         "metadata_path": row["metadata_path"],
         "raw_roots": row["raw_roots"],
@@ -1176,9 +1559,16 @@ def empty_collector_metadata(episode: dict[str, Any] | None, status: str = "queu
     return {
         "episode_uuid": str((episode or {}).get("episode_uuid") or "").strip().lower(),
         "collector": "",
+        "seat": "",
+        "seat_number": "",
+        "device": "",
+        "device_id": "",
+        "device_identifier": "",
+        "task": "",
+        "metadata_json": "",
         "raw_path": "",
         "metadata_path": "",
-        "raw_roots": raw_episode_roots_signature(),
+        "raw_roots": source_metadata_signature(),
         "found": False,
         "status": status,
         "attempts": 0,
@@ -1191,7 +1581,7 @@ def empty_collector_metadata(episode: dict[str, Any] | None, status: str = "queu
 def collector_cache_should_fetch(payload: dict[str, Any] | None) -> bool:
     if not payload:
         return True
-    if payload.get("raw_roots") != raw_episode_roots_signature():
+    if payload.get("raw_roots") != source_metadata_signature():
         return True
     if payload.get("collector") or payload.get("status") == "fetched":
         return False
@@ -1206,7 +1596,8 @@ def collector_cache_get(dataset_path: Path, episode_index: int) -> dict[str, Any
         row = conn.execute(
             """
             SELECT dataset_id, episode_index, dataset_path, episode_name, episode_uuid,
-                   collector, raw_path, metadata_path, raw_roots, found, status, attempts,
+                   collector, seat, seat_number, device, device_id, device_identifier,
+                   task, metadata_json, raw_path, metadata_path, raw_roots, found, status, attempts,
                    last_error, updated_at
             FROM collector_cache
             WHERE dataset_id = ? AND episode_index = ?
@@ -1222,7 +1613,8 @@ def collector_cache_map(dataset_path: Path) -> dict[int, dict[str, Any]]:
         rows = conn.execute(
             """
             SELECT dataset_id, episode_index, dataset_path, episode_name, episode_uuid,
-                   collector, raw_path, metadata_path, raw_roots, found, status, attempts,
+                   collector, seat, seat_number, device, device_id, device_identifier,
+                   task, metadata_json, raw_path, metadata_path, raw_roots, found, status, attempts,
                    last_error, updated_at
             FROM collector_cache
             WHERE dataset_id = ?
@@ -1242,6 +1634,13 @@ def upsert_collector_cache(
     episode_uuid = str(source_metadata.get("episode_uuid") or episode.get("episode_uuid") or "").strip().lower()
     found = bool(source_metadata.get("found"))
     collector = str(source_metadata.get("collector") or "").strip()
+    seat = str(source_metadata.get("seat") or "").strip()
+    seat_number = str(source_metadata.get("seat_number") or "").strip()
+    device = str(source_metadata.get("device") or "").strip()
+    device_id_value = str(source_metadata.get("device_id") or "").strip()
+    device_identifier = str(source_metadata.get("device_identifier") or "").strip()
+    task = str(source_metadata.get("task") or "").strip()
+    metadata_json = str(source_metadata.get("metadata_json") or "")
     status = "error" if error else ("fetched" if found and collector else ("missing_collector" if found else "missing"))
     now = utc_now()
     with connect_label_db(dataset_path) as conn:
@@ -1258,14 +1657,22 @@ def upsert_collector_cache(
             """
             INSERT INTO collector_cache (
                 dataset_id, episode_index, dataset_path, episode_name, episode_uuid,
-                collector, raw_path, metadata_path, raw_roots, found, status, attempts,
+                collector, seat, seat_number, device, device_id, device_identifier, task,
+                metadata_json, raw_path, metadata_path, raw_roots, found, status, attempts,
                 last_error, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(dataset_id, episode_index) DO UPDATE SET
                 dataset_path = excluded.dataset_path,
                 episode_name = excluded.episode_name,
                 episode_uuid = excluded.episode_uuid,
                 collector = excluded.collector,
+                seat = excluded.seat,
+                seat_number = excluded.seat_number,
+                device = excluded.device,
+                device_id = excluded.device_id,
+                device_identifier = excluded.device_identifier,
+                task = excluded.task,
+                metadata_json = excluded.metadata_json,
                 raw_path = excluded.raw_path,
                 metadata_path = excluded.metadata_path,
                 raw_roots = excluded.raw_roots,
@@ -1282,9 +1689,16 @@ def upsert_collector_cache(
                 episode.get("episode_name", f"episode_{episode_index:06d}"),
                 episode_uuid,
                 collector,
+                seat,
+                seat_number,
+                device,
+                device_id_value,
+                device_identifier,
+                task,
+                metadata_json,
                 str(source_metadata.get("raw_path") or ""),
                 str(source_metadata.get("metadata_path") or ""),
-                str(source_metadata.get("raw_roots") or raw_episode_roots_signature()),
+                str(source_metadata.get("raw_roots") or source_metadata_signature()),
                 1 if found else 0,
                 status,
                 attempts,
@@ -1296,9 +1710,16 @@ def upsert_collector_cache(
     return {
         "episode_uuid": episode_uuid,
         "collector": collector,
+        "seat": seat,
+        "seat_number": seat_number,
+        "device": device,
+        "device_id": device_id_value,
+        "device_identifier": device_identifier,
+        "task": task,
+        "metadata_json": metadata_json,
         "raw_path": str(source_metadata.get("raw_path") or ""),
         "metadata_path": str(source_metadata.get("metadata_path") or ""),
-        "raw_roots": str(source_metadata.get("raw_roots") or raw_episode_roots_signature()),
+        "raw_roots": str(source_metadata.get("raw_roots") or source_metadata_signature()),
         "found": found,
         "status": status,
         "attempts": attempts,
@@ -1312,11 +1733,27 @@ def fetch_and_store_collector_metadata(dataset_path: Path, episode: dict[str, An
     episode_uuid = str(episode.get("episode_uuid") or "").strip().lower()
     if not episode_uuid:
         return empty_collector_metadata(episode, status="missing")
+    errors: list[str] = []
     try:
-        source_metadata = raw_episode_metadata(episode_uuid)
+        source_metadata: dict[str, Any] = {}
+        if dm3_enabled():
+            try:
+                source_metadata = dm3_episode_metadata(episode_uuid)
+            except Exception as exc:
+                errors.append(str(exc))
+        if not source_metadata and raw_metadata_fallback_enabled():
+            try:
+                source_metadata = raw_episode_metadata(episode_uuid)
+            except Exception as exc:
+                errors.append(str(exc))
         if not source_metadata:
             source_metadata = empty_collector_metadata(episode, status="missing")
-        return upsert_collector_cache(dataset_path, episode, source_metadata)
+        return upsert_collector_cache(
+            dataset_path,
+            episode,
+            source_metadata,
+            "; ".join(errors)[:500] if errors and not source_metadata.get("found") else "",
+        )
     except Exception as exc:
         return upsert_collector_cache(dataset_path, episode, empty_collector_metadata(episode, status="error"), str(exc))
 
@@ -1393,7 +1830,7 @@ def collector_cache_worker() -> None:
 
 def schedule_dataset_collector_prefetch(dataset_path: Path, dataset: dict[str, Any]) -> None:
     fingerprint = tuple(dataset.get("fingerprint") or ())
-    prefetch_key = (dataset_id(dataset_path), fingerprint, raw_episode_roots_signature())
+    prefetch_key = (dataset_id(dataset_path), fingerprint, source_metadata_signature())
     with COLLECTOR_CACHE_LOCK:
         if prefetch_key in COLLECTOR_PREFETCH_KEYS:
             return
@@ -1422,7 +1859,18 @@ def cached_or_queued_source_metadata(dataset_path: Path, episode: dict[str, Any]
 
 def source_metadata_for_episode(dataset_path: Path, episode: dict[str, Any] | None, episode_uuid: str = "") -> dict[str, Any]:
     if episode is None:
-        return raw_episode_metadata(episode_uuid)
+        uuid = str(episode_uuid or "").strip().lower()
+        if not uuid:
+            return {}
+        if dm3_enabled():
+            try:
+                metadata = dm3_episode_metadata(uuid)
+                if metadata:
+                    return metadata
+            except Exception:
+                if not raw_metadata_fallback_enabled():
+                    return empty_collector_metadata({"episode_uuid": uuid}, status="error")
+        return raw_episode_metadata(uuid) if raw_metadata_fallback_enabled() else empty_collector_metadata({"episode_uuid": uuid}, status="missing")
     cached = collector_cache_get(dataset_path, int(episode["episode_index"]))
     if cached and not collector_cache_should_fetch(cached):
         return cached
@@ -2373,6 +2821,11 @@ class QCRequestHandler(BaseHTTPRequestHandler):
                     "dataset_path": str(dataset_path),
                     "dataset_id": dataset_id(dataset_path),
                     "raw_episode_roots": [str(root) for root in configured_raw_episode_roots()],
+                    "source_metadata": {
+                        "dm3_enabled": dm3_enabled(),
+                        "dm3_base_url": DM3_BASE_URL if dm3_enabled() else "",
+                        "raw_metadata_fallback": raw_metadata_fallback_enabled(),
+                    },
                     "user": user,
                     "time": utc_now(),
                 }
