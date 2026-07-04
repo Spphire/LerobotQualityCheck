@@ -807,6 +807,7 @@ function playRejectOverlay(collectorName) {
   }
   stopReviveOverlay();
   stopRejectOverlay();
+  playRejectSound();
   el.rejectCollectorName.textContent = collectorName || "未知采集人";
   el.rejectCollectorName.setAttribute("data-name", collectorName || "未知采集人");
   el.rejectOverlay.classList.remove("playing");
@@ -822,6 +823,17 @@ function playRejectOverlay(collectorName) {
   }, 1180);
 }
 
+function createEffectNoiseBuffer(context, duration, envelope = (ratio) => 1 - ratio) {
+  const length = Math.max(1, Math.floor(context.sampleRate * duration));
+  const buffer = context.createBuffer(1, length, context.sampleRate);
+  const channel = buffer.getChannelData(0);
+  for (let i = 0; i < length; i += 1) {
+    const ratio = i / Math.max(1, length - 1);
+    channel[i] = (Math.random() * 2 - 1) * envelope(ratio);
+  }
+  return buffer;
+}
+
 function audioContextForEffects() {
   const AudioContextClass = window.AudioContext || window.webkitAudioContext;
   if (!AudioContextClass) {
@@ -834,6 +846,62 @@ function audioContextForEffects() {
     state.reviveAudioContext.resume().catch(() => {});
   }
   return state.reviveAudioContext;
+}
+
+function playRejectSound() {
+  const context = audioContextForEffects();
+  if (!context) {
+    return;
+  }
+  const now = context.currentTime;
+  const master = context.createGain();
+  master.gain.setValueAtTime(0.0001, now);
+  master.gain.exponentialRampToValueAtTime(0.48, now + 0.012);
+  master.gain.exponentialRampToValueAtTime(0.0001, now + 0.62);
+  master.connect(context.destination);
+
+  const slash = context.createBufferSource();
+  const slashFilter = context.createBiquadFilter();
+  const slashGain = context.createGain();
+  slash.buffer = createEffectNoiseBuffer(context, 0.34, (ratio) => Math.pow(1 - ratio, 1.6));
+  slashFilter.type = "bandpass";
+  slashFilter.frequency.setValueAtTime(5200, now);
+  slashFilter.frequency.exponentialRampToValueAtTime(1200, now + 0.28);
+  slashFilter.Q.setValueAtTime(5.5, now);
+  slashGain.gain.setValueAtTime(0.0001, now);
+  slashGain.gain.exponentialRampToValueAtTime(0.3, now + 0.018);
+  slashGain.gain.exponentialRampToValueAtTime(0.0001, now + 0.34);
+  slash.connect(slashFilter);
+  slashFilter.connect(slashGain);
+  slashGain.connect(master);
+  slash.start(now);
+  slash.stop(now + 0.36);
+
+  const edge = context.createOscillator();
+  const edgeGain = context.createGain();
+  edge.type = "sawtooth";
+  edge.frequency.setValueAtTime(1360, now + 0.02);
+  edge.frequency.exponentialRampToValueAtTime(460, now + 0.22);
+  edgeGain.gain.setValueAtTime(0.0001, now + 0.02);
+  edgeGain.gain.exponentialRampToValueAtTime(0.16, now + 0.035);
+  edgeGain.gain.exponentialRampToValueAtTime(0.0001, now + 0.24);
+  edge.connect(edgeGain);
+  edgeGain.connect(master);
+  edge.start(now + 0.02);
+  edge.stop(now + 0.28);
+
+  const impact = context.createOscillator();
+  const impactGain = context.createGain();
+  impact.type = "triangle";
+  impact.frequency.setValueAtTime(120, now + 0.12);
+  impact.frequency.exponentialRampToValueAtTime(46, now + 0.44);
+  impactGain.gain.setValueAtTime(0.0001, now + 0.1);
+  impactGain.gain.exponentialRampToValueAtTime(0.42, now + 0.135);
+  impactGain.gain.exponentialRampToValueAtTime(0.0001, now + 0.55);
+  impact.connect(impactGain);
+  impactGain.connect(master);
+  impact.start(now + 0.1);
+  impact.stop(now + 0.58);
 }
 
 function initReviveAssets() {
@@ -925,16 +993,10 @@ function playReviveGeneratedSound() {
     osc.stop(now + note.start + note.duration + 0.03);
   });
 
-  const noiseLength = Math.max(1, Math.floor(context.sampleRate * 0.32));
-  const buffer = context.createBuffer(1, noiseLength, context.sampleRate);
-  const channel = buffer.getChannelData(0);
-  for (let i = 0; i < noiseLength; i += 1) {
-    channel[i] = (Math.random() * 2 - 1) * (1 - i / noiseLength);
-  }
   const noise = context.createBufferSource();
   const noiseGain = context.createGain();
   const filter = context.createBiquadFilter();
-  noise.buffer = buffer;
+  noise.buffer = createEffectNoiseBuffer(context, 0.32);
   filter.type = "bandpass";
   filter.frequency.setValueAtTime(3400, now + 0.05);
   filter.Q.setValueAtTime(1.8, now + 0.05);
