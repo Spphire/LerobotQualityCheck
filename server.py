@@ -67,6 +67,7 @@ QC_ROOT = PROJECT_ROOT / "qc_results"
 VIDEO_PROXY_ROOT = PROJECT_ROOT / "video_proxy"
 SETTINGS_PATH = QC_ROOT / "settings.json"
 USER_SESSIONS_DB_PATH = QC_ROOT / "user_sessions.db"
+PROXY_BUILD_HISTORY_PATH = QC_ROOT / "proxy_build_history.jsonl"
 ALLOWED_DATASET_ROOT = Path("/mnt").resolve()
 RAW_METADATA_TIMEOUT_SECONDS = float(os.environ.get("LQCP_RAW_METADATA_TIMEOUT", "3"))
 COLLECTOR_CACHE_WORKERS = max(1, int(os.environ.get("LQCP_COLLECTOR_CACHE_WORKERS", "3")))
@@ -86,6 +87,7 @@ PROXY_GPU_MAX_UTIL = env_int("LQCP_PROXY_GPU_MAX_UTIL", 10, minimum=0, maximum=1
 PROXY_GPU_MAX_MEMORY_RATIO = env_float("LQCP_PROXY_GPU_MAX_MEMORY_RATIO", 0.20, minimum=0.0, maximum=1.0)
 PROXY_GPU_WORKERS_PER_GPU = env_int("LQCP_PROXY_GPU_WORKERS_PER_GPU", 2, minimum=1, maximum=8)
 PROXY_GPU_FALLBACK_CPU = env_flag("LQCP_PROXY_GPU_FALLBACK_CPU", True)
+PROXY_BUILD_HISTORY_LIMIT = env_int("LQCP_PROXY_BUILD_HISTORY_LIMIT", 200, minimum=1, maximum=5000)
 
 STATUS_VALUES = {"reject", "pending", "accept", "unlabeled"}
 STATUS_ALIASES = {"bad": "reject", "review": "pending", "good": "accept"}
@@ -113,6 +115,7 @@ PRESENCE_LOCK = threading.Lock()
 SETTINGS_LOCK = threading.Lock()
 USER_SESSION_LOCK = threading.Lock()
 PROXY_BUILD_LOCK = threading.Lock()
+PROXY_BUILD_HISTORY_LOCK = threading.Lock()
 SERVER_CONFIG: dict[str, Any] = {}
 DM3_TOKEN = DM3_STATIC_TOKEN
 PROXY_BUILD_JOBS: dict[str, "ProxyBuildJob"] = {}
@@ -1172,6 +1175,63 @@ def transcode_proxy_video(src: Path, dst: Path, encoder: str, gpu_index: int | N
     return "built", ""
 
 
+def parse_utc_timestamp(value: str) -> datetime | None:
+    if not value:
+        return None
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
+
+
+def proxy_build_duration_seconds(started_at: str, ended_at: str) -> float | None:
+    start = parse_utc_timestamp(started_at)
+    end = parse_utc_timestamp(ended_at)
+    if not start or not end:
+        return None
+    return max(0.0, round((end - start).total_seconds(), 3))
+
+
+def proxy_build_rate(done: int, duration_seconds: float | None) -> float | None:
+    if not duration_seconds or duration_seconds <= 0:
+        return None
+    return round(done / duration_seconds, 3)
+
+
+def append_proxy_build_history(record: dict[str, Any]) -> None:
+    try:
+        with PROXY_BUILD_HISTORY_LOCK:
+            PROXY_BUILD_HISTORY_PATH.parent.mkdir(parents=True, exist_ok=True)
+            with PROXY_BUILD_HISTORY_PATH.open("a", encoding="utf-8") as handle:
+                handle.write(json.dumps(record, ensure_ascii=False, default=json_default) + "\n")
+    except Exception as exc:
+        print(f"Warning: failed to write proxy build history: {exc}", file=sys.stderr, flush=True)
+
+
+def read_proxy_build_history(dataset_path: Path | None = None, limit: int = PROXY_BUILD_HISTORY_LIMIT) -> list[dict[str, Any]]:
+    if not PROXY_BUILD_HISTORY_PATH.exists():
+        return []
+    dataset_key = dataset_id(dataset_path) if dataset_path is not None else ""
+    rows: list[dict[str, Any]] = []
+    with PROXY_BUILD_HISTORY_LOCK:
+        with PROXY_BUILD_HISTORY_PATH.open("r", encoding="utf-8") as handle:
+            for line in handle:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    row = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if dataset_key and row.get("dataset_id") != dataset_key:
+                    continue
+                rows.append(row)
+    return rows[-limit:]
+
+
 class ProxyBuildJob:
     def __init__(self, dataset_path: Path, dataset: dict[str, Any], reason: str = "load") -> None:
         self.dataset_path = dataset_path
@@ -1310,6 +1370,7 @@ class ProxyBuildJob:
         self.status = "complete"
         self.finished_at = utc_now()
         self.updated_at = self.finished_at
+        append_proxy_build_history(self.history_record_locked("complete"))
 
     def mark_cancelled(self) -> None:
         with self.lock:
@@ -1318,49 +1379,70 @@ class ProxyBuildJob:
             self.status = "cancelled"
             self.finished_at = utc_now()
             self.updated_at = self.finished_at
+            append_proxy_build_history(self.history_record_locked("cancelled"))
 
     def cancel(self) -> None:
         with self.lock:
             self.cancel_requested = True
             self.updated_at = utc_now()
 
+    def payload_locked(self) -> dict[str, Any]:
+        pending = len(self.queued_priorities)
+        in_progress = len(self.in_progress)
+        done = len(self.done)
+        ended_at = self.finished_at or self.updated_at
+        duration_seconds = proxy_build_duration_seconds(self.created_at, ended_at)
+        return {
+            "dataset_id": self.dataset_id,
+            "dataset_path": str(self.dataset_path),
+            "output_root": self.output_root,
+            "status": self.status,
+            "reason": self.reason,
+            "created_at": self.created_at,
+            "updated_at": self.updated_at,
+            "finished_at": self.finished_at,
+            "duration_seconds": duration_seconds,
+            "videos_per_second": proxy_build_rate(done, duration_seconds),
+            "encoder": self.encoder,
+            "gpu_indices": self.gpu_indices,
+            "worker_count": self.worker_count,
+            "total": self.total,
+            "built": self.built,
+            "skipped": self.skipped,
+            "failed": self.failed,
+            "pending": pending,
+            "in_progress": in_progress,
+            "done": done,
+            "percent": round((done / self.total) * 100, 2) if self.total else 100.0,
+            "priority_episodes": list(self.priority_episodes),
+            "failed_items": list(self.failed_items),
+            "config": {
+                "auto": PROXY_BUILD_ON_DATASET_LOAD,
+                "workers": PROXY_BUILD_WORKERS,
+                "crf": PROXY_BUILD_CRF,
+                "preset": PROXY_BUILD_PRESET,
+                "encoder": PROXY_BUILD_ENCODER,
+                "gpu_max_util": PROXY_GPU_MAX_UTIL,
+                "gpu_max_memory_ratio": PROXY_GPU_MAX_MEMORY_RATIO,
+                "gpu_workers_per_gpu": PROXY_GPU_WORKERS_PER_GPU,
+                "gpu_fallback_cpu": PROXY_GPU_FALLBACK_CPU,
+            },
+        }
+
+    def history_record_locked(self, event: str) -> dict[str, Any]:
+        record = self.payload_locked()
+        record.update(
+            {
+                "schema_version": 1,
+                "event": event,
+                "recorded_at": utc_now(),
+            }
+        )
+        return record
+
     def payload(self) -> dict[str, Any]:
         with self.lock:
-            pending = len(self.queued_priorities)
-            in_progress = len(self.in_progress)
-            done = len(self.done)
-            return {
-                "dataset_id": self.dataset_id,
-                "dataset_path": str(self.dataset_path),
-                "output_root": self.output_root,
-                "status": self.status,
-                "reason": self.reason,
-                "created_at": self.created_at,
-                "updated_at": self.updated_at,
-                "finished_at": self.finished_at,
-                "encoder": self.encoder,
-                "gpu_indices": self.gpu_indices,
-                "worker_count": self.worker_count,
-                "total": self.total,
-                "built": self.built,
-                "skipped": self.skipped,
-                "failed": self.failed,
-                "pending": pending,
-                "in_progress": in_progress,
-                "done": done,
-                "percent": round((done / self.total) * 100, 2) if self.total else 100.0,
-                "priority_episodes": list(self.priority_episodes),
-                "failed_items": list(self.failed_items),
-                "config": {
-                    "auto": PROXY_BUILD_ON_DATASET_LOAD,
-                    "workers": PROXY_BUILD_WORKERS,
-                    "crf": PROXY_BUILD_CRF,
-                    "preset": PROXY_BUILD_PRESET,
-                    "encoder": PROXY_BUILD_ENCODER,
-                    "gpu_max_util": PROXY_GPU_MAX_UTIL,
-                    "gpu_max_memory_ratio": PROXY_GPU_MAX_MEMORY_RATIO,
-                },
-            }
+            return self.payload_locked()
 
 
 def schedule_proxy_build(dataset_path: Path, dataset: dict[str, Any], reason: str = "load", force: bool = False) -> dict[str, Any]:
@@ -1415,6 +1497,16 @@ def proxy_build_status(dataset_path: Path | None = None) -> dict[str, Any]:
                 "auto": PROXY_BUILD_ON_DATASET_LOAD,
             }
         return {"jobs": [job.payload() for job in PROXY_BUILD_JOBS.values()]}
+
+
+def proxy_build_history_payload(dataset_path: Path | None, limit: int) -> dict[str, Any]:
+    rows = read_proxy_build_history(dataset_path, limit=limit)
+    return {
+        "history_path": str(PROXY_BUILD_HISTORY_PATH),
+        "limit": limit,
+        "count": len(rows),
+        "history": rows,
+    }
 
 
 def safe_rel_media_path(raw_rel: str | None) -> PurePosixPath:
@@ -3299,6 +3391,12 @@ class QCRequestHandler(BaseHTTPRequestHandler):
 
         if method == "GET" and parsed.path == "/api/proxy_status":
             self.send_json(proxy_build_status(dataset_path))
+            return
+
+        if method == "GET" and parsed.path == "/api/proxy_history":
+            limit = parse_int(query_value(query, "limit"), PROXY_BUILD_HISTORY_LIMIT, 1, 5000)
+            include_all = query_value(query, "all") == "1"
+            self.send_json(proxy_build_history_payload(None if include_all else dataset_path, limit))
             return
 
         if method == "POST" and parsed.path == "/api/proxy_build":
