@@ -1616,6 +1616,9 @@ body[data-mode="phone"].phone-drawer-open {
 
 .phone-episode-summary .status-pill {
   grid-row: 1 / span 2;
+  max-width: min(42vw, 180px);
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .phone-episode-summary h1 {

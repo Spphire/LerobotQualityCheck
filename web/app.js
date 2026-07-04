@@ -601,8 +601,11 @@ function renderHeader(current) {
   const episode = current?.episode;
   const label = current?.label || {};
   const status = statusClass(label.status || summary?.status);
+  const labelUser = label.user || label.annotator || "";
+  const showStatusUser = state.phone && labelUser && (status === "reject" || status === "accept");
   el.currentStatus.className = `status-pill ${status}`;
-  el.currentStatus.textContent = statusLabel(status);
+  el.currentStatus.textContent = showStatusUser ? `${statusLabel(status)} · ${labelUser}` : statusLabel(status);
+  el.currentStatus.title = showStatusUser ? `${statusLabel(status)} / ${labelUser}` : statusLabel(status);
   if (!episode) {
     el.episodeTitle.textContent = "选择一个 episode";
     el.episodeMeta.textContent = "";
