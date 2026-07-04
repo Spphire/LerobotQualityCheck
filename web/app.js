@@ -1,5 +1,101 @@
 const DEFAULT_DATASET = "/mnt/nm_dataset/dataset/giftbox_0628_1912episodes";
 const STATUS_ORDER = ["reject", "pending", "accept"];
+const QC_VIEW_STORAGE_KEY = "lqcp.qcViewMode";
+const QC_VIEW_QUERY_KEY = "view";
+
+function qcRouteMode(pathname = window.location.pathname) {
+  if (pathname === "/" || pathname === "") {
+    return "desktop";
+  }
+  if (pathname === "/phone" || pathname === "/phone/") {
+    return "phone";
+  }
+  return "";
+}
+
+function readStoredQcViewMode() {
+  try {
+    const stored = window.localStorage.getItem(QC_VIEW_STORAGE_KEY);
+    return stored === "phone" || stored === "desktop" ? stored : "";
+  } catch {
+    return "";
+  }
+}
+
+function writeStoredQcViewMode(mode) {
+  try {
+    if (mode === "phone" || mode === "desktop") {
+      window.localStorage.setItem(QC_VIEW_STORAGE_KEY, mode);
+    } else {
+      window.localStorage.removeItem(QC_VIEW_STORAGE_KEY);
+    }
+  } catch {
+    // Storage can be blocked in private browsing; auto routing still works.
+  }
+}
+
+function detectQcViewMode() {
+  const width = window.innerWidth || document.documentElement?.clientWidth || window.screen?.width || 0;
+  const height = window.innerHeight || document.documentElement?.clientHeight || window.screen?.height || 0;
+  const userAgent = navigator.userAgent || "";
+  const mobileUa = /Android|iPhone|iPod|Mobile|Windows Phone|webOS|BlackBerry/i.test(userAgent);
+  const tabletUa = /iPad|Tablet/i.test(userAgent)
+    || (navigator.platform === "MacIntel" && Number(navigator.maxTouchPoints || 0) > 1);
+  const coarsePointer = Boolean(window.matchMedia?.("(pointer: coarse)")?.matches);
+  const noHover = Boolean(window.matchMedia?.("(hover: none)")?.matches);
+  const touch = Number(navigator.maxTouchPoints || 0) > 0;
+  const portrait = height >= width;
+
+  if (mobileUa || ((coarsePointer || noHover || touch) && width <= 900)) {
+    return "phone";
+  }
+  if ((tabletUa || coarsePointer || touch) && portrait && width <= 1180) {
+    return "phone";
+  }
+  return "desktop";
+}
+
+function searchWithoutQcView(params) {
+  const next = new URLSearchParams(params);
+  next.delete(QC_VIEW_QUERY_KEY);
+  const text = next.toString();
+  return text ? `?${text}` : "";
+}
+
+function preferredQcViewMode(params) {
+  const requested = String(params.get(QC_VIEW_QUERY_KEY) || "").toLowerCase();
+  if (requested === "phone" || requested === "mobile") {
+    writeStoredQcViewMode("phone");
+    return "phone";
+  }
+  if (requested === "desktop" || requested === "pc") {
+    writeStoredQcViewMode("desktop");
+    return "desktop";
+  }
+  if (requested === "auto") {
+    writeStoredQcViewMode("");
+    return detectQcViewMode();
+  }
+  return readStoredQcViewMode() || detectQcViewMode();
+}
+
+(function routeQcViewForDevice() {
+  const currentMode = qcRouteMode();
+  if (!currentMode) {
+    return;
+  }
+  const params = new URLSearchParams(window.location.search);
+  const preferredMode = preferredQcViewMode(params);
+  const cleanSearch = searchWithoutQcView(params);
+  const nextPath = preferredMode === "phone" ? "/phone" : "/";
+  if (preferredMode && preferredMode !== currentMode) {
+    window.location.replace(`${nextPath}${cleanSearch}${window.location.hash || ""}`);
+    return;
+  }
+  if (params.has(QC_VIEW_QUERY_KEY)) {
+    window.history.replaceState(null, "", `${window.location.pathname}${cleanSearch}${window.location.hash || ""}`);
+  }
+})();
 
 const STATUS_LABELS = {
   unlabeled: "待审",
@@ -289,7 +385,8 @@ function syncNavigationLinks() {
   document.querySelectorAll("[data-context-link]").forEach((link) => {
     const path = link.getAttribute("data-context-link");
     if (path) {
-      link.href = urlWithContext(path);
+      const viewMode = link.getAttribute("data-view-mode");
+      link.href = urlWithContext(path, viewMode ? { view: viewMode } : {});
     }
   });
 }
