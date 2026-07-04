@@ -75,6 +75,12 @@ SERVER_CONFIG: dict[str, Any] = {}
 DM3_TOKEN = DM3_STATIC_TOKEN
 
 
+class QCThreadingHTTPServer(ThreadingHTTPServer):
+    daemon_threads = True
+    allow_reuse_address = True
+    request_queue_size = max(16, int(os.environ.get("LQCP_HTTP_REQUEST_QUEUE_SIZE", "128")))
+
+
 class AppError(Exception):
     def __init__(self, message: str, status: int = 400):
         super().__init__(message)
@@ -3244,7 +3250,7 @@ def main() -> None:
         print(f"Warning: default dataset could not be loaded: {exc}", file=sys.stderr, flush=True)
 
     address = (args.host, args.port)
-    httpd = ThreadingHTTPServer(address, QCRequestHandler)
+    httpd = QCThreadingHTTPServer(address, QCRequestHandler)
     print(f"LerobotQualityCheckPlatform listening on http://{args.host}:{args.port}", flush=True)
     if args.token:
         print("Token authentication is enabled. Add ?token=<token> to the URL.", flush=True)
