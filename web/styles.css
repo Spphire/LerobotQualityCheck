@@ -1565,6 +1565,9 @@ canvas {
 }
 
 body[data-mode="phone"] {
+  height: 100%;
+  min-height: -webkit-fill-available;
+  min-height: 100dvh;
   overflow: hidden;
   overscroll-behavior: none;
   background: #f5f5f7;
@@ -1579,10 +1582,14 @@ body[data-mode="phone"].phone-drawer-open {
   display: grid;
   grid-template-rows: 1fr 9fr;
   width: 100vw;
+  height: 100vh;
+  height: -webkit-fill-available;
   height: 100dvh;
-  min-height: 100vh;
-  padding: max(8px, env(safe-area-inset-top)) max(8px, env(safe-area-inset-right)) max(8px, env(safe-area-inset-bottom)) max(8px, env(safe-area-inset-left));
+  min-height: 0;
+  max-height: 100dvh;
+  padding: max(10px, env(safe-area-inset-top)) max(10px, env(safe-area-inset-right)) max(12px, env(safe-area-inset-bottom)) max(10px, env(safe-area-inset-left));
   gap: 8px;
+  overflow: hidden;
 }
 
 .phone-topbar {
@@ -1658,6 +1665,7 @@ body[data-mode="phone"].phone-drawer-open {
 .phone-video-stream {
   min-width: 0;
   min-height: 0;
+  overflow: hidden;
 }
 
 .phone-grippers {
@@ -1688,23 +1696,28 @@ body[data-mode="phone"] .trajectory-legend {
 
 body[data-mode="phone"] .video-stream-inner {
   display: flex;
-  align-items: stretch;
+  align-items: center;
   justify-content: center;
   gap: 8px;
+  width: 100%;
   height: 100%;
   overflow: hidden;
 }
 
 body[data-mode="phone"] .quick-video-card {
-  flex: 0 1 auto;
-  width: auto;
-  max-width: 44vw;
-  aspect-ratio: var(--video-aspect, 16 / 9);
+  flex: 0 0 var(--phone-card-width, calc((100% - 16px) / 3));
+  width: var(--phone-card-width, calc((100% - 16px) / 3));
+  height: var(--phone-card-height, 100%);
+  max-width: none;
+  align-self: center;
+  aspect-ratio: auto;
   grid-template-rows: 24px minmax(0, 1fr);
 }
 
 body[data-mode="phone"] .quick-video {
   width: 100%;
+  height: var(--phone-video-height, 100%);
+  max-height: 100%;
   aspect-ratio: var(--video-aspect, 16 / 9);
 }
 

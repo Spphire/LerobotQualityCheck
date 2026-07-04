@@ -1004,6 +1004,7 @@ function findWristVideoIndex(videos = [], side = "left") {
 
 function renderCameraCanvases(videos) {
   stopHiddenVideos();
+  resetQuickVideoMediaLayout();
   state.headVideoIndex = findHeadVideoIndex(videos);
   state.quickVideoIndexes = {
     left: findWristVideoIndex(videos, "left"),
@@ -1012,6 +1013,7 @@ function renderCameraCanvases(videos) {
   };
   setHeadVideoSize(16 / 9);
   if (!videos.length) {
+    syncQuickVideoLayout();
     drawQuickVideoCanvases();
     return;
   }
@@ -1026,6 +1028,7 @@ function renderCameraCanvases(videos) {
       video.removeAttribute("src");
       video.load();
       video.dataset.emptyMessage = message;
+      syncQuickVideoLayout();
       return;
     }
     video.src = videoInfo.url;
@@ -1058,6 +1061,7 @@ function renderCameraCanvases(videos) {
     video.load();
   });
   updateProgressUI(0);
+  syncQuickVideoLayout();
   drawQuickVideoCanvases();
   applyPlaybackRate();
   window.setTimeout(playAll, 80);
@@ -1140,11 +1144,92 @@ function syncQuickVideoAspect(index, video) {
   if (!video.videoWidth || !video.videoHeight) {
     return;
   }
+  const aspectValue = video.videoWidth / video.videoHeight;
   const aspect = `${video.videoWidth} / ${video.videoHeight}`;
   quickVideoEntries().forEach(([key, quickVideo]) => {
     if (state.quickVideoIndexes[key] === index && quickVideo) {
+      const card = quickVideo.closest(".quick-video-card");
       quickVideo.style.setProperty("--video-aspect", aspect);
-      quickVideo.closest(".quick-video-card")?.style.setProperty("--video-aspect", aspect);
+      quickVideo.style.setProperty("--video-aspect-value", String(aspectValue));
+      card?.style.setProperty("--video-aspect", aspect);
+      card?.style.setProperty("--video-aspect-value", String(aspectValue));
+    }
+  });
+  syncQuickVideoLayout();
+}
+
+function quickVideoAspectValue(video, card) {
+  if (video?.videoWidth && video.videoHeight) {
+    return video.videoWidth / video.videoHeight;
+  }
+  const raw = card?.style.getPropertyValue("--video-aspect-value");
+  const value = Number.parseFloat(raw || "");
+  return Number.isFinite(value) && value > 0 ? value : 16 / 9;
+}
+
+function clearPhoneQuickVideoLayout(cards) {
+  cards.forEach((card) => {
+    card.style.removeProperty("--phone-card-width");
+    card.style.removeProperty("--phone-card-height");
+    card.style.removeProperty("--phone-video-height");
+  });
+}
+
+function syncQuickVideoLayout() {
+  const cards = quickVideoEntries()
+    .map(([, video]) => {
+      const card = video?.closest(".quick-video-card");
+      return card ? { card, video, aspect: quickVideoAspectValue(video, card) } : null;
+    })
+    .filter(Boolean);
+  if (!cards.length) {
+    return;
+  }
+  if (!state.phone) {
+    clearPhoneQuickVideoLayout(cards.map((item) => item.card));
+    return;
+  }
+  const container = document.querySelector(".phone-video-stream .video-stream-inner");
+  if (!container) {
+    return;
+  }
+  const containerRect = container.getBoundingClientRect();
+  const containerStyle = window.getComputedStyle(container);
+  const rawGap = Number.parseFloat(containerStyle.columnGap || containerStyle.gap || "0");
+  const gap = Number.isFinite(rawGap) ? rawGap : 0;
+  const availableWidth = Math.max(0, containerRect.width - gap * Math.max(0, cards.length - 1));
+  const availableHeight = Math.max(0, containerRect.height);
+  if (!availableWidth || !availableHeight) {
+    return;
+  }
+  const headerHeight = Math.max(...cards.map(({ card }) => {
+    const header = card.querySelector("header");
+    return header?.getBoundingClientRect().height || 0;
+  }), 0);
+  const aspectSum = cards.reduce((sum, item) => sum + item.aspect, 0);
+  const videoHeight = Math.max(1, Math.min(availableHeight - headerHeight, availableWidth / aspectSum));
+  const cardHeight = videoHeight + headerHeight;
+  cards.forEach(({ card, aspect }) => {
+    card.style.setProperty("--phone-video-height", `${videoHeight}px`);
+    card.style.setProperty("--phone-card-height", `${cardHeight}px`);
+    card.style.setProperty("--phone-card-width", `${videoHeight * aspect}px`);
+  });
+}
+
+function resetQuickVideoMediaLayout() {
+  quickVideoEntries().forEach(([, video]) => {
+    if (!video) {
+      return;
+    }
+    video.style.removeProperty("--video-aspect");
+    video.style.removeProperty("--video-aspect-value");
+    const card = video.closest(".quick-video-card");
+    if (card) {
+      card.style.removeProperty("--video-aspect");
+      card.style.removeProperty("--video-aspect-value");
+      card.style.removeProperty("--phone-card-width");
+      card.style.removeProperty("--phone-card-height");
+      card.style.removeProperty("--phone-video-height");
     }
   });
 }
@@ -3429,9 +3514,15 @@ function bindEvents() {
 
   window.addEventListener("resize", () => {
     setHeadVideoSize(state.headVideoAspect);
+    syncQuickVideoLayout();
     drawHeadVideoCanvas();
     drawQuickVideoCanvases();
     drawGripperCurves();
+    resizeTrajectoryPlot();
+  });
+  window.visualViewport?.addEventListener("resize", () => {
+    syncQuickVideoLayout();
+    drawQuickVideoCanvases();
     resizeTrajectoryPlot();
   });
   bindPhoneControls();
