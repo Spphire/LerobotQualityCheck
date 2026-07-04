@@ -83,8 +83,10 @@ PROXY_BUILD_WORKERS = env_int("LQCP_PROXY_BUILD_WORKERS", DEFAULT_PROXY_BUILD_WO
 PROXY_BUILD_CRF = env_int("LQCP_PROXY_CRF", 32, minimum=18, maximum=40)
 PROXY_BUILD_PRESET = os.environ.get("LQCP_PROXY_PRESET", "veryfast").strip() or "veryfast"
 PROXY_BUILD_ENCODER = os.environ.get("LQCP_PROXY_ENCODER", "auto").strip().lower() or "auto"
+PROXY_GPU_SELECT_MODE = os.environ.get("LQCP_PROXY_GPU_SELECT_MODE", "idle").strip().lower() or "idle"
 PROXY_GPU_MAX_UTIL = env_int("LQCP_PROXY_GPU_MAX_UTIL", 10, minimum=0, maximum=100)
 PROXY_GPU_MAX_MEMORY_RATIO = env_float("LQCP_PROXY_GPU_MAX_MEMORY_RATIO", 0.20, minimum=0.0, maximum=1.0)
+PROXY_GPU_MEMORY_MAX_RATIO = env_float("LQCP_PROXY_GPU_MEMORY_MAX_RATIO", 0.80, minimum=0.0, maximum=1.0)
 PROXY_GPU_WORKERS_PER_GPU = env_int("LQCP_PROXY_GPU_WORKERS_PER_GPU", 2, minimum=1, maximum=8)
 PROXY_GPU_FALLBACK_CPU = env_flag("LQCP_PROXY_GPU_FALLBACK_CPU", True)
 PROXY_BUILD_HISTORY_LIMIT = env_int("LQCP_PROXY_BUILD_HISTORY_LIMIT", 200, minimum=1, maximum=5000)
@@ -121,6 +123,7 @@ DM3_TOKEN = DM3_STATIC_TOKEN
 PROXY_BUILD_JOBS: dict[str, "ProxyBuildJob"] = {}
 PROXY_BUILD_SEQUENCE = 0
 FFMPEG_ENCODERS: set[str] | None = None
+NVENC_GPU_CAPABILITY: dict[int, bool] = {}
 
 
 class QCThreadingHTTPServer(ThreadingHTTPServer):
@@ -1050,7 +1053,7 @@ def ffmpeg_encoder_available(encoder: str) -> bool:
     return encoder in FFMPEG_ENCODERS
 
 
-def idle_gpu_indices() -> list[int]:
+def gpu_statuses() -> list[dict[str, Any]]:
     if not ffmpeg_encoder_available("h264_nvenc"):
         return []
     try:
@@ -1070,7 +1073,7 @@ def idle_gpu_indices() -> list[int]:
         return []
     if proc.returncode != 0:
         return []
-    idle = []
+    statuses = []
     for line in (proc.stdout or "").splitlines():
         parts = [part.strip() for part in line.split(",")]
         if len(parts) < 4:
@@ -1082,17 +1085,78 @@ def idle_gpu_indices() -> list[int]:
             mem_total = max(1.0, float(parts[3]))
         except ValueError:
             continue
-        if util <= PROXY_GPU_MAX_UTIL and (mem_used / mem_total) <= PROXY_GPU_MAX_MEMORY_RATIO:
-            idle.append(index)
-    return idle
+        memory_ratio = mem_used / mem_total
+        statuses.append(
+            {
+                "index": index,
+                "util": util,
+                "memory_used": mem_used,
+                "memory_total": mem_total,
+                "memory_ratio": memory_ratio,
+            }
+        )
+    return statuses
+
+
+def candidate_gpu_indices() -> list[int]:
+    mode = PROXY_GPU_SELECT_MODE
+    statuses = gpu_statuses()
+    if mode in {"memory", "memory_available", "mem"}:
+        return [
+            int(status["index"])
+            for status in statuses
+            if float(status["memory_ratio"]) <= PROXY_GPU_MEMORY_MAX_RATIO
+        ]
+    return [
+        int(status["index"])
+        for status in statuses
+        if int(status["util"]) <= PROXY_GPU_MAX_UTIL and float(status["memory_ratio"]) <= PROXY_GPU_MAX_MEMORY_RATIO
+    ]
+
+
+def nvenc_probe_gpu(gpu_index: int) -> bool:
+    cached = NVENC_GPU_CAPABILITY.get(gpu_index)
+    if cached is not None:
+        return cached
+    cmd = [
+        "ffmpeg",
+        "-hide_banner",
+        "-loglevel",
+        "error",
+        "-y",
+        "-f",
+        "lavfi",
+        "-i",
+        "color=c=black:s=16x16:r=1:d=0.1",
+        "-frames:v",
+        "1",
+        "-c:v",
+        "h264_nvenc",
+        "-gpu",
+        str(gpu_index),
+        "-f",
+        "null",
+        "-",
+    ]
+    try:
+        proc = subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True, timeout=8, check=False)
+        ok = proc.returncode == 0
+    except Exception:
+        ok = False
+    NVENC_GPU_CAPABILITY[gpu_index] = ok
+    return ok
+
+
+def nvenc_capable_gpu_indices(indices: list[int]) -> list[int]:
+    return [index for index in indices if nvenc_probe_gpu(index)]
 
 
 def choose_proxy_encoder() -> tuple[str, list[int]]:
     requested = PROXY_BUILD_ENCODER
     if requested in {"h264_nvenc", "nvenc", "gpu", "auto"}:
-        idle = idle_gpu_indices()
-        if idle and requested != "libx264":
-            return "h264_nvenc", idle
+        capable = nvenc_capable_gpu_indices(candidate_gpu_indices())
+        if capable and requested != "libx264":
+            return "h264_nvenc", capable
         if requested in {"h264_nvenc", "nvenc", "gpu"}:
             return "libx264", []
     return "libx264", []
@@ -1422,8 +1486,10 @@ class ProxyBuildJob:
                 "crf": PROXY_BUILD_CRF,
                 "preset": PROXY_BUILD_PRESET,
                 "encoder": PROXY_BUILD_ENCODER,
+                "gpu_select_mode": PROXY_GPU_SELECT_MODE,
                 "gpu_max_util": PROXY_GPU_MAX_UTIL,
                 "gpu_max_memory_ratio": PROXY_GPU_MAX_MEMORY_RATIO,
+                "gpu_memory_max_ratio": PROXY_GPU_MEMORY_MAX_RATIO,
                 "gpu_workers_per_gpu": PROXY_GPU_WORKERS_PER_GPU,
                 "gpu_fallback_cpu": PROXY_GPU_FALLBACK_CPU,
             },
