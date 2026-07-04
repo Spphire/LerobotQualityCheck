@@ -31,12 +31,17 @@ function apiUrl(path) {
   return `${path}?${next.toString()}`;
 }
 
-function contextUrl(path) {
+function contextUrl(path, params = {}) {
   const next = new URLSearchParams();
   next.set("user", "admin");
   if (state.token) {
     next.set("token", state.token);
   }
+  Object.entries(params).forEach(([key, value]) => {
+    if (value !== undefined && value !== null && value !== "") {
+      next.set(key, value);
+    }
+  });
   return `${path}?${next.toString()}`;
 }
 
@@ -44,7 +49,8 @@ function syncNavigationLinks() {
   document.querySelectorAll("[data-context-link]").forEach((link) => {
     const path = link.getAttribute("data-context-link");
     if (path) {
-      link.href = contextUrl(path);
+      const viewMode = link.getAttribute("data-view-mode");
+      link.href = contextUrl(path, viewMode ? { view: viewMode } : {});
     }
   });
 }
