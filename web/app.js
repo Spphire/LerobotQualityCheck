@@ -191,6 +191,9 @@ const state = {
   lastPlaybackUiAt: 0,
   rejectOverlayTimer: null,
   rejectOverlayRequest: 0,
+  rejectAssetAudio: null,
+  rejectAssetAudioReady: false,
+  rejectAssetAudioFailed: false,
   labelEffectRequest: 0,
   reviveOverlayTimer: null,
   reviveAudioContext: null,
@@ -849,6 +852,13 @@ function audioContextForEffects() {
 }
 
 function playRejectSound() {
+  if (playRejectAssetSound()) {
+    return;
+  }
+  playRejectGeneratedSound();
+}
+
+function playRejectGeneratedSound() {
   const context = audioContextForEffects();
   if (!context) {
     return;
@@ -932,25 +942,60 @@ function initReviveAssets() {
   state.reviveAssetAudio = audio;
 }
 
-function playReviveAssetSound() {
-  if (!state.reviveAssetAudio || state.reviveAssetAudioFailed) {
+function initRejectAssets() {
+  const audio = new Audio("/dev-assets/effects/kill_slash.wav");
+  audio.preload = "auto";
+  audio.volume = 0.86;
+  audio.addEventListener("canplaythrough", () => {
+    state.rejectAssetAudioReady = true;
+  }, { once: true });
+  audio.addEventListener("error", () => {
+    state.rejectAssetAudioFailed = true;
+  }, { once: true });
+  state.rejectAssetAudio = audio;
+}
+
+function playEffectAssetSound(audio, markFailed, fallback) {
+  if (!audio) {
     return false;
   }
   try {
-    state.reviveAssetAudio.pause();
-    state.reviveAssetAudio.currentTime = 0;
-    const played = state.reviveAssetAudio.play();
+    audio.pause();
+    audio.currentTime = 0;
+    const played = audio.play();
     if (played && typeof played.catch === "function") {
       played.catch(() => {
-        state.reviveAssetAudioFailed = true;
-        playReviveGeneratedSound();
+        markFailed();
+        fallback?.();
       });
     }
     return true;
   } catch (error) {
-    state.reviveAssetAudioFailed = true;
+    markFailed();
     return false;
   }
+}
+
+function playRejectAssetSound() {
+  if (state.rejectAssetAudioFailed) {
+    return false;
+  }
+  return playEffectAssetSound(
+    state.rejectAssetAudio,
+    () => { state.rejectAssetAudioFailed = true; },
+    playRejectGeneratedSound,
+  );
+}
+
+function playReviveAssetSound() {
+  if (state.reviveAssetAudioFailed) {
+    return false;
+  }
+  return playEffectAssetSound(
+    state.reviveAssetAudio,
+    () => { state.reviveAssetAudioFailed = true; },
+    playReviveGeneratedSound,
+  );
 }
 
 function playReviveSound() {
@@ -1010,8 +1055,25 @@ function playReviveGeneratedSound() {
   noise.stop(now + 0.42);
 }
 
+function unlockEffectAudioContext() {
+  const context = audioContextForEffects();
+  if (!context) {
+    return;
+  }
+  const now = context.currentTime;
+  const source = context.createBufferSource();
+  const gain = context.createGain();
+  source.buffer = createEffectNoiseBuffer(context, 0.012, () => 0);
+  gain.gain.setValueAtTime(0.0001, now);
+  source.connect(gain);
+  gain.connect(context.destination);
+  source.start(now);
+  source.stop(now + 0.014);
+}
+
 function primeEffectAudio() {
-  audioContextForEffects();
+  unlockEffectAudioContext();
+  state.rejectAssetAudio?.load();
   state.reviveAssetAudio?.load();
 }
 
@@ -3689,6 +3751,7 @@ function animationLoop(now = 0) {
 
 async function main() {
   initElements();
+  initRejectAssets();
   initReviveAssets();
   renderTrajectoryLegends();
   renderIssueOptions();
