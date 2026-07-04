@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import concurrent.futures
 import csv
 import hashlib
 import io
@@ -1148,7 +1149,11 @@ def nvenc_probe_gpu(gpu_index: int) -> bool:
 
 
 def nvenc_capable_gpu_indices(indices: list[int]) -> list[int]:
-    return [index for index in indices if nvenc_probe_gpu(index)]
+    if not indices:
+        return []
+    with concurrent.futures.ThreadPoolExecutor(max_workers=min(8, len(indices))) as pool:
+        results = list(pool.map(nvenc_probe_gpu, indices))
+    return [index for index, capable in zip(indices, results) if capable]
 
 
 def choose_proxy_encoder() -> tuple[str, list[int]]:
