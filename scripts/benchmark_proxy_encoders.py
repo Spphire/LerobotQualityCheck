@@ -151,7 +151,13 @@ def main() -> int:
     parser.add_argument("--dataset", type=Path, required=True)
     parser.add_argument("--sample-count", type=int, default=480)
     parser.add_argument("--cpu-workers", type=int, default=48)
-    parser.add_argument("--gpu-workers-per-gpu", type=int, action="append", default=[1, 2])
+    parser.add_argument(
+        "--gpu-workers-per-gpu",
+        type=int,
+        action="append",
+        default=None,
+        help="NVENC worker count per selected GPU; may be repeated. Defaults to 1 and 2.",
+    )
     parser.add_argument("--gpu-memory-max-ratio", type=float, default=0.8)
     parser.add_argument("--crf", type=int, default=32)
     parser.add_argument("--output-root", type=Path, default=None)
@@ -182,7 +188,8 @@ def main() -> int:
     )
 
     results = [run_bench("cpu_libx264", sample, output_root, "libx264", args.cpu_workers, args.crf, [])]
-    for per_gpu in args.gpu_workers_per_gpu:
+    gpu_workers_per_gpu = args.gpu_workers_per_gpu or [1, 2]
+    for per_gpu in gpu_workers_per_gpu:
         if gpu_indices:
             workers = max(1, len(gpu_indices) * per_gpu)
             results.append(run_bench(f"nvenc_w{workers}", sample, output_root, "h264_nvenc", workers, args.crf, gpu_indices))
