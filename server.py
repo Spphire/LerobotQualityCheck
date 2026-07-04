@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import concurrent.futures
 import csv
 import hashlib
 import io
@@ -29,6 +30,37 @@ from urllib import request as urlrequest
 from urllib.parse import parse_qs, unquote, urlencode, urlparse
 
 
+def env_flag(name: str, default: bool = False) -> bool:
+    value = os.environ.get(name)
+    if value is None:
+        return default
+    return value.strip().lower() not in {"0", "false", "no", "off", ""}
+
+
+def env_int(name: str, default: int, minimum: int | None = None, maximum: int | None = None) -> int:
+    try:
+        value = int(os.environ.get(name, str(default)))
+    except ValueError:
+        value = default
+    if minimum is not None:
+        value = max(minimum, value)
+    if maximum is not None:
+        value = min(maximum, value)
+    return value
+
+
+def env_float(name: str, default: float, minimum: float | None = None, maximum: float | None = None) -> float:
+    try:
+        value = float(os.environ.get(name, str(default)))
+    except ValueError:
+        value = default
+    if minimum is not None:
+        value = max(minimum, value)
+    if maximum is not None:
+        value = min(maximum, value)
+    return value
+
+
 DEFAULT_DATASET = "/mnt/nm_dataset/dataset/giftbox_0628_1912episodes"
 PROJECT_ROOT = Path(__file__).resolve().parent
 STATIC_ROOT = PROJECT_ROOT / "web"
@@ -36,6 +68,7 @@ QC_ROOT = PROJECT_ROOT / "qc_results"
 VIDEO_PROXY_ROOT = PROJECT_ROOT / "video_proxy"
 SETTINGS_PATH = QC_ROOT / "settings.json"
 USER_SESSIONS_DB_PATH = QC_ROOT / "user_sessions.db"
+PROXY_BUILD_HISTORY_PATH = QC_ROOT / "proxy_build_history.jsonl"
 ALLOWED_DATASET_ROOT = Path("/mnt").resolve()
 RAW_METADATA_TIMEOUT_SECONDS = float(os.environ.get("LQCP_RAW_METADATA_TIMEOUT", "3"))
 COLLECTOR_CACHE_WORKERS = max(1, int(os.environ.get("LQCP_COLLECTOR_CACHE_WORKERS", "3")))
@@ -45,6 +78,19 @@ DM3_PHONE_NUMBER = (os.environ.get("LQCP_DM3_PHONE_NUMBER") or os.environ.get("L
 DM3_PASSWORD = os.environ.get("LQCP_DM3_PASSWORD", "")
 DM3_STATIC_TOKEN = os.environ.get("LQCP_DM3_TOKEN", "").strip()
 DM3_TIMEOUT_SECONDS = float(os.environ.get("LQCP_DM3_TIMEOUT", "8"))
+DEFAULT_PROXY_BUILD_WORKERS = max(4, min(48, (os.cpu_count() or 8) // 4))
+PROXY_BUILD_ON_DATASET_LOAD = env_flag("LQCP_PROXY_BUILD_ON_DATASET_LOAD", True)
+PROXY_BUILD_WORKERS = env_int("LQCP_PROXY_BUILD_WORKERS", DEFAULT_PROXY_BUILD_WORKERS, minimum=1, maximum=256)
+PROXY_BUILD_CRF = env_int("LQCP_PROXY_CRF", 32, minimum=18, maximum=40)
+PROXY_BUILD_PRESET = os.environ.get("LQCP_PROXY_PRESET", "veryfast").strip() or "veryfast"
+PROXY_BUILD_ENCODER = os.environ.get("LQCP_PROXY_ENCODER", "auto").strip().lower() or "auto"
+PROXY_GPU_SELECT_MODE = os.environ.get("LQCP_PROXY_GPU_SELECT_MODE", "idle").strip().lower() or "idle"
+PROXY_GPU_MAX_UTIL = env_int("LQCP_PROXY_GPU_MAX_UTIL", 10, minimum=0, maximum=100)
+PROXY_GPU_MAX_MEMORY_RATIO = env_float("LQCP_PROXY_GPU_MAX_MEMORY_RATIO", 0.20, minimum=0.0, maximum=1.0)
+PROXY_GPU_MEMORY_MAX_RATIO = env_float("LQCP_PROXY_GPU_MEMORY_MAX_RATIO", 0.80, minimum=0.0, maximum=1.0)
+PROXY_GPU_WORKERS_PER_GPU = env_int("LQCP_PROXY_GPU_WORKERS_PER_GPU", 2, minimum=1, maximum=8)
+PROXY_GPU_FALLBACK_CPU = env_flag("LQCP_PROXY_GPU_FALLBACK_CPU", True)
+PROXY_BUILD_HISTORY_LIMIT = env_int("LQCP_PROXY_BUILD_HISTORY_LIMIT", 200, minimum=1, maximum=5000)
 
 STATUS_VALUES = {"reject", "pending", "accept", "unlabeled"}
 STATUS_ALIASES = {"bad": "reject", "review": "pending", "good": "accept"}
@@ -71,8 +117,20 @@ LABEL_LOCK = threading.Lock()
 PRESENCE_LOCK = threading.Lock()
 SETTINGS_LOCK = threading.Lock()
 USER_SESSION_LOCK = threading.Lock()
+PROXY_BUILD_LOCK = threading.Lock()
+PROXY_BUILD_HISTORY_LOCK = threading.Lock()
 SERVER_CONFIG: dict[str, Any] = {}
 DM3_TOKEN = DM3_STATIC_TOKEN
+PROXY_BUILD_JOBS: dict[str, "ProxyBuildJob"] = {}
+PROXY_BUILD_SEQUENCE = 0
+FFMPEG_ENCODERS: set[str] | None = None
+NVENC_GPU_CAPABILITY: dict[int, bool] = {}
+
+
+class QCThreadingHTTPServer(ThreadingHTTPServer):
+    daemon_threads = True
+    allow_reuse_address = True
+    request_queue_size = max(16, int(os.environ.get("LQCP_HTTP_REQUEST_QUEUE_SIZE", "128")))
 
 
 class AppError(Exception):
@@ -951,6 +1009,571 @@ def scan_data_files(dataset_path: Path) -> dict[int, str]:
     return data_files
 
 
+def proxy_rel_path(rel_path: str) -> Path:
+    return Path(*PurePosixPath(rel_path).parts)
+
+
+def proxy_output_path_for_rel(dataset_path: Path, rel_path: str) -> Path:
+    proxy_root = (VIDEO_PROXY_ROOT / dataset_id(dataset_path)).resolve()
+    file_path = (proxy_root / proxy_rel_path(rel_path)).resolve()
+    if str(file_path) != str(proxy_root) and not str(file_path).startswith(str(proxy_root) + os.sep):
+        raise AppError("Invalid proxy media path", 403)
+    return file_path
+
+
+def proxy_needs_rebuild(src: Path, dst: Path) -> bool:
+    try:
+        if not dst.is_file() or dst.stat().st_size <= 0:
+            return True
+        return dst.stat().st_mtime_ns < src.stat().st_mtime_ns
+    except OSError:
+        return True
+
+
+def ffmpeg_encoder_available(encoder: str) -> bool:
+    global FFMPEG_ENCODERS
+    if FFMPEG_ENCODERS is None:
+        try:
+            proc = subprocess.run(
+                ["ffmpeg", "-hide_banner", "-encoders"],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL,
+                text=True,
+                timeout=5,
+                check=False,
+            )
+            FFMPEG_ENCODERS = set(re.findall(r"\s([A-Za-z0-9_]+)\s+", proc.stdout or ""))
+        except Exception:
+            FFMPEG_ENCODERS = set()
+    return encoder in FFMPEG_ENCODERS
+
+
+def gpu_statuses() -> list[dict[str, Any]]:
+    if not ffmpeg_encoder_available("h264_nvenc"):
+        return []
+    try:
+        proc = subprocess.run(
+            [
+                "nvidia-smi",
+                "--query-gpu=index,utilization.gpu,memory.used,memory.total",
+                "--format=csv,noheader,nounits",
+            ],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            text=True,
+            timeout=3,
+            check=False,
+        )
+    except Exception:
+        return []
+    if proc.returncode != 0:
+        return []
+    statuses = []
+    for line in (proc.stdout or "").splitlines():
+        parts = [part.strip() for part in line.split(",")]
+        if len(parts) < 4:
+            continue
+        try:
+            index = int(parts[0])
+            util = int(float(parts[1]))
+            mem_used = float(parts[2])
+            mem_total = max(1.0, float(parts[3]))
+        except ValueError:
+            continue
+        memory_ratio = mem_used / mem_total
+        statuses.append(
+            {
+                "index": index,
+                "util": util,
+                "memory_used": mem_used,
+                "memory_total": mem_total,
+                "memory_ratio": memory_ratio,
+            }
+        )
+    return statuses
+
+
+def candidate_gpu_indices() -> list[int]:
+    mode = PROXY_GPU_SELECT_MODE
+    statuses = gpu_statuses()
+    if mode in {"memory", "memory_available", "mem"}:
+        return [
+            int(status["index"])
+            for status in statuses
+            if float(status["memory_ratio"]) <= PROXY_GPU_MEMORY_MAX_RATIO
+        ]
+    return [
+        int(status["index"])
+        for status in statuses
+        if int(status["util"]) <= PROXY_GPU_MAX_UTIL and float(status["memory_ratio"]) <= PROXY_GPU_MAX_MEMORY_RATIO
+    ]
+
+
+def nvenc_probe_gpu(gpu_index: int) -> bool:
+    cached = NVENC_GPU_CAPABILITY.get(gpu_index)
+    if cached is not None:
+        return cached
+    cmd = [
+        "ffmpeg",
+        "-hide_banner",
+        "-loglevel",
+        "error",
+        "-y",
+        "-f",
+        "lavfi",
+        "-i",
+        "color=c=black:s=16x16:r=1:d=0.1",
+        "-frames:v",
+        "1",
+        "-c:v",
+        "h264_nvenc",
+        "-gpu",
+        str(gpu_index),
+        "-f",
+        "null",
+        "-",
+    ]
+    try:
+        proc = subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True, timeout=8, check=False)
+        ok = proc.returncode == 0
+    except Exception:
+        ok = False
+    NVENC_GPU_CAPABILITY[gpu_index] = ok
+    return ok
+
+
+def nvenc_capable_gpu_indices(indices: list[int]) -> list[int]:
+    if not indices:
+        return []
+    with concurrent.futures.ThreadPoolExecutor(max_workers=min(8, len(indices))) as pool:
+        results = list(pool.map(nvenc_probe_gpu, indices))
+    return [index for index, capable in zip(indices, results) if capable]
+
+
+def choose_proxy_encoder() -> tuple[str, list[int]]:
+    requested = PROXY_BUILD_ENCODER
+    if requested in {"h264_nvenc", "nvenc", "gpu", "auto"}:
+        capable = nvenc_capable_gpu_indices(candidate_gpu_indices())
+        if capable and requested != "libx264":
+            return "h264_nvenc", capable
+        if requested in {"h264_nvenc", "nvenc", "gpu"}:
+            return "libx264", []
+    return "libx264", []
+
+
+def proxy_worker_count(encoder: str, gpu_indices: list[int]) -> int:
+    if encoder == "h264_nvenc" and gpu_indices:
+        return max(1, min(PROXY_BUILD_WORKERS, len(gpu_indices) * PROXY_GPU_WORKERS_PER_GPU))
+    return PROXY_BUILD_WORKERS
+
+
+def transcode_proxy_video(src: Path, dst: Path, encoder: str, gpu_index: int | None = None) -> tuple[str, str]:
+    if not proxy_needs_rebuild(src, dst):
+        return "skipped", ""
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    tmp = dst.with_suffix(dst.suffix + ".tmp.mp4")
+    try:
+        if tmp.exists():
+            tmp.unlink()
+    except OSError:
+        pass
+    base_cmd = [
+        "ffmpeg",
+        "-hide_banner",
+        "-loglevel",
+        "error",
+        "-y",
+        "-i",
+        str(src),
+        "-map",
+        "0:v:0",
+        "-an",
+    ]
+    if encoder == "h264_nvenc":
+        cmd = [
+            *base_cmd,
+            "-c:v",
+            "h264_nvenc",
+            "-preset",
+            "fast",
+            "-rc",
+            "vbr",
+            "-cq",
+            str(PROXY_BUILD_CRF),
+            "-b:v",
+            "0",
+        ]
+        if gpu_index is not None:
+            cmd.extend(["-gpu", str(gpu_index)])
+        cmd.extend(["-pix_fmt", "yuv420p", "-profile:v", "main", "-level", "3.1", "-movflags", "+faststart", str(tmp)])
+    else:
+        cmd = [
+            *base_cmd,
+            "-c:v",
+            "libx264",
+            "-preset",
+            PROXY_BUILD_PRESET,
+            "-crf",
+            str(PROXY_BUILD_CRF),
+            "-pix_fmt",
+            "yuv420p",
+            "-profile:v",
+            "main",
+            "-level",
+            "3.1",
+            "-movflags",
+            "+faststart",
+            "-threads",
+            "1",
+            str(tmp),
+        ]
+    proc = subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True, check=False)
+    if proc.returncode != 0:
+        try:
+            tmp.unlink()
+        except OSError:
+            pass
+        return "failed", (proc.stderr or "")[-500:]
+    os.replace(tmp, dst)
+    return "built", ""
+
+
+def parse_utc_timestamp(value: str) -> datetime | None:
+    if not value:
+        return None
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
+
+
+def proxy_build_duration_seconds(started_at: str, ended_at: str) -> float | None:
+    start = parse_utc_timestamp(started_at)
+    end = parse_utc_timestamp(ended_at)
+    if not start or not end:
+        return None
+    return max(0.0, round((end - start).total_seconds(), 3))
+
+
+def proxy_build_rate(done: int, duration_seconds: float | None) -> float | None:
+    if not duration_seconds or duration_seconds <= 0:
+        return None
+    return round(done / duration_seconds, 3)
+
+
+def append_proxy_build_history(record: dict[str, Any]) -> None:
+    try:
+        with PROXY_BUILD_HISTORY_LOCK:
+            PROXY_BUILD_HISTORY_PATH.parent.mkdir(parents=True, exist_ok=True)
+            with PROXY_BUILD_HISTORY_PATH.open("a", encoding="utf-8") as handle:
+                handle.write(json.dumps(record, ensure_ascii=False, default=json_default) + "\n")
+    except Exception as exc:
+        print(f"Warning: failed to write proxy build history: {exc}", file=sys.stderr, flush=True)
+
+
+def read_proxy_build_history(dataset_path: Path | None = None, limit: int = PROXY_BUILD_HISTORY_LIMIT) -> list[dict[str, Any]]:
+    if not PROXY_BUILD_HISTORY_PATH.exists():
+        return []
+    dataset_key = dataset_id(dataset_path) if dataset_path is not None else ""
+    rows: list[dict[str, Any]] = []
+    with PROXY_BUILD_HISTORY_LOCK:
+        with PROXY_BUILD_HISTORY_PATH.open("r", encoding="utf-8") as handle:
+            for line in handle:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    row = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if dataset_key and row.get("dataset_id") != dataset_key:
+                    continue
+                rows.append(row)
+    return rows[-limit:]
+
+
+class ProxyBuildJob:
+    def __init__(self, dataset_path: Path, dataset: dict[str, Any], reason: str = "load") -> None:
+        self.dataset_path = dataset_path
+        self.dataset_id = dataset_id(dataset_path)
+        self.dataset_fingerprint = tuple(dataset.get("fingerprint") or ())
+        self.output_root = str((VIDEO_PROXY_ROOT / self.dataset_id).resolve())
+        self.created_at = utc_now()
+        self.updated_at = self.created_at
+        self.finished_at = ""
+        self.reason = reason
+        self.status = "queued"
+        self.encoder = "pending"
+        self.gpu_indices: list[int] = []
+        self.worker_count = 0
+        self.total = 0
+        self.built = 0
+        self.skipped = 0
+        self.failed = 0
+        self.cancel_requested = False
+        self.videos_by_rel: dict[str, dict[str, Any]] = {}
+        self.queued_priorities: dict[str, int] = {}
+        self.in_progress: set[str] = set()
+        self.done: set[str] = set()
+        self.failed_items: list[dict[str, str]] = []
+        self.priority_episodes: list[int] = []
+        self.queue: queue.PriorityQueue[tuple[int, int, str]] = queue.PriorityQueue()
+        self.lock = threading.Lock()
+        for videos in (dataset.get("videos_by_episode") or {}).values():
+            for video in videos:
+                rel_path = str(video.get("rel_path") or "")
+                if not rel_path:
+                    continue
+                self.videos_by_rel[rel_path] = dict(video)
+        self.total = len(self.videos_by_rel)
+
+    def enqueue(self, rel_path: str, priority: int) -> bool:
+        global PROXY_BUILD_SEQUENCE
+        if rel_path not in self.videos_by_rel:
+            return False
+        with self.lock:
+            if rel_path in self.done or rel_path in self.in_progress:
+                return False
+            existing = self.queued_priorities.get(rel_path)
+            if existing is not None and existing <= priority:
+                return False
+            PROXY_BUILD_SEQUENCE += 1
+            self.queued_priorities[rel_path] = priority
+            self.queue.put((priority, PROXY_BUILD_SEQUENCE, rel_path))
+            self.updated_at = utc_now()
+            return True
+
+    def enqueue_all(self, priority: int = 100) -> int:
+        count = 0
+        for rel_path in sorted(self.videos_by_rel):
+            if self.enqueue(rel_path, priority):
+                count += 1
+        return count
+
+    def prioritize_episode(self, dataset: dict[str, Any], episode_index: int) -> int:
+        videos = (dataset.get("videos_by_episode") or {}).get(episode_index, [])
+        count = 0
+        for video in videos:
+            rel_path = str(video.get("rel_path") or "")
+            if self.enqueue(rel_path, -100):
+                count += 1
+        with self.lock:
+            if episode_index not in self.priority_episodes:
+                self.priority_episodes = ([episode_index] + self.priority_episodes)[:20]
+        return count
+
+    def start(self) -> None:
+        encoder, gpu_indices = choose_proxy_encoder()
+        worker_count = proxy_worker_count(encoder, gpu_indices)
+        with self.lock:
+            self.encoder = encoder
+            self.gpu_indices = gpu_indices
+            self.worker_count = worker_count
+            self.status = "running"
+            self.updated_at = utc_now()
+        for worker_index in range(worker_count):
+            thread = threading.Thread(target=self.worker, args=(worker_index,), name=f"proxy-build-{self.dataset_id}-{worker_index}", daemon=True)
+            thread.start()
+
+    def worker(self, worker_index: int) -> None:
+        while True:
+            if self.cancel_requested:
+                self.mark_cancelled()
+                return
+            try:
+                priority, _sequence, rel_path = self.queue.get(timeout=1.0)
+            except queue.Empty:
+                with self.lock:
+                    if len(self.done) >= self.total or (not self.queued_priorities and not self.in_progress and self.queue.empty()):
+                        self.mark_complete_locked()
+                        return
+                continue
+            with self.lock:
+                current_priority = self.queued_priorities.get(rel_path)
+                if current_priority is None or current_priority != priority:
+                    self.queue.task_done()
+                    continue
+                self.queued_priorities.pop(rel_path, None)
+                self.in_progress.add(rel_path)
+                self.updated_at = utc_now()
+            try:
+                src = (self.dataset_path / proxy_rel_path(rel_path)).resolve()
+                dst = proxy_output_path_for_rel(self.dataset_path, rel_path)
+                encoder = self.encoder
+                gpu_index = None
+                if encoder == "h264_nvenc" and self.gpu_indices:
+                    gpu_index = self.gpu_indices[worker_index % len(self.gpu_indices)]
+                status, error = transcode_proxy_video(src, dst, encoder, gpu_index)
+                if status == "failed" and encoder == "h264_nvenc" and PROXY_GPU_FALLBACK_CPU:
+                    status, error = transcode_proxy_video(src, dst, "libx264", None)
+            except Exception as exc:
+                status, error = "failed", str(exc)
+            with self.lock:
+                self.in_progress.discard(rel_path)
+                self.done.add(rel_path)
+                if status == "built":
+                    self.built += 1
+                elif status == "skipped":
+                    self.skipped += 1
+                else:
+                    self.failed += 1
+                    if len(self.failed_items) < 50:
+                        self.failed_items.append({"rel_path": rel_path, "error": error[:500]})
+                self.updated_at = utc_now()
+                if len(self.done) >= self.total and not self.in_progress and not self.queued_priorities:
+                    self.mark_complete_locked()
+            self.queue.task_done()
+
+    def mark_complete_locked(self) -> None:
+        if self.status in {"complete", "cancelled"}:
+            return
+        self.status = "complete"
+        self.finished_at = utc_now()
+        self.updated_at = self.finished_at
+        append_proxy_build_history(self.history_record_locked("complete"))
+
+    def mark_cancelled(self) -> None:
+        with self.lock:
+            if self.status == "cancelled":
+                return
+            self.status = "cancelled"
+            self.finished_at = utc_now()
+            self.updated_at = self.finished_at
+            append_proxy_build_history(self.history_record_locked("cancelled"))
+
+    def cancel(self) -> None:
+        with self.lock:
+            self.cancel_requested = True
+            self.updated_at = utc_now()
+
+    def payload_locked(self) -> dict[str, Any]:
+        pending = len(self.queued_priorities)
+        in_progress = len(self.in_progress)
+        done = len(self.done)
+        ended_at = self.finished_at or self.updated_at
+        duration_seconds = proxy_build_duration_seconds(self.created_at, ended_at)
+        return {
+            "dataset_id": self.dataset_id,
+            "dataset_path": str(self.dataset_path),
+            "output_root": self.output_root,
+            "status": self.status,
+            "reason": self.reason,
+            "created_at": self.created_at,
+            "updated_at": self.updated_at,
+            "finished_at": self.finished_at,
+            "duration_seconds": duration_seconds,
+            "videos_per_second": proxy_build_rate(done, duration_seconds),
+            "encoder": self.encoder,
+            "gpu_indices": self.gpu_indices,
+            "worker_count": self.worker_count,
+            "total": self.total,
+            "built": self.built,
+            "skipped": self.skipped,
+            "failed": self.failed,
+            "pending": pending,
+            "in_progress": in_progress,
+            "done": done,
+            "percent": round((done / self.total) * 100, 2) if self.total else 100.0,
+            "priority_episodes": list(self.priority_episodes),
+            "failed_items": list(self.failed_items),
+            "config": {
+                "auto": PROXY_BUILD_ON_DATASET_LOAD,
+                "workers": PROXY_BUILD_WORKERS,
+                "crf": PROXY_BUILD_CRF,
+                "preset": PROXY_BUILD_PRESET,
+                "encoder": PROXY_BUILD_ENCODER,
+                "gpu_select_mode": PROXY_GPU_SELECT_MODE,
+                "gpu_max_util": PROXY_GPU_MAX_UTIL,
+                "gpu_max_memory_ratio": PROXY_GPU_MAX_MEMORY_RATIO,
+                "gpu_memory_max_ratio": PROXY_GPU_MEMORY_MAX_RATIO,
+                "gpu_workers_per_gpu": PROXY_GPU_WORKERS_PER_GPU,
+                "gpu_fallback_cpu": PROXY_GPU_FALLBACK_CPU,
+            },
+        }
+
+    def history_record_locked(self, event: str) -> dict[str, Any]:
+        record = self.payload_locked()
+        record.update(
+            {
+                "schema_version": 1,
+                "event": event,
+                "recorded_at": utc_now(),
+            }
+        )
+        return record
+
+    def payload(self) -> dict[str, Any]:
+        with self.lock:
+            return self.payload_locked()
+
+
+def schedule_proxy_build(dataset_path: Path, dataset: dict[str, Any], reason: str = "load", force: bool = False) -> dict[str, Any]:
+    if not PROXY_BUILD_ON_DATASET_LOAD and not force:
+        return proxy_build_status(dataset_path)
+    dataset_key = dataset_id(dataset_path)
+    fingerprint = tuple(dataset.get("fingerprint") or ())
+    with PROXY_BUILD_LOCK:
+        existing = PROXY_BUILD_JOBS.get(dataset_key)
+        if existing and not force:
+            if existing.dataset_fingerprint == fingerprint and existing.status in {"queued", "running", "complete"}:
+                return existing.payload()
+        if existing and force:
+            existing.cancel()
+        job = ProxyBuildJob(dataset_path, dataset, reason=reason)
+        PROXY_BUILD_JOBS[dataset_key] = job
+        job.enqueue_all(priority=100)
+        job.start()
+        return job.payload()
+
+
+def prioritize_proxy_episode(dataset_path: Path, dataset: dict[str, Any], episode_index: int) -> dict[str, Any]:
+    if not PROXY_BUILD_ON_DATASET_LOAD:
+        return proxy_build_status(dataset_path)
+    dataset_key = dataset_id(dataset_path)
+    with PROXY_BUILD_LOCK:
+        job = PROXY_BUILD_JOBS.get(dataset_key)
+    if not job:
+        return schedule_proxy_build(dataset_path, dataset, reason="episode-priority")
+    job.prioritize_episode(dataset, episode_index)
+    return job.payload()
+
+
+def cancel_proxy_build(dataset_path: Path) -> dict[str, Any]:
+    dataset_key = dataset_id(dataset_path)
+    with PROXY_BUILD_LOCK:
+        job = PROXY_BUILD_JOBS.get(dataset_key)
+    if job:
+        job.cancel()
+        return job.payload()
+    return proxy_build_status(dataset_path)
+
+
+def proxy_build_status(dataset_path: Path | None = None) -> dict[str, Any]:
+    with PROXY_BUILD_LOCK:
+        if dataset_path is not None:
+            job = PROXY_BUILD_JOBS.get(dataset_id(dataset_path))
+            return job.payload() if job else {
+                "dataset_id": dataset_id(dataset_path),
+                "dataset_path": str(dataset_path),
+                "status": "idle",
+                "auto": PROXY_BUILD_ON_DATASET_LOAD,
+            }
+        return {"jobs": [job.payload() for job in PROXY_BUILD_JOBS.values()]}
+
+
+def proxy_build_history_payload(dataset_path: Path | None, limit: int) -> dict[str, Any]:
+    rows = read_proxy_build_history(dataset_path, limit=limit)
+    return {
+        "history_path": str(PROXY_BUILD_HISTORY_PATH),
+        "limit": limit,
+        "count": len(rows),
+        "history": rows,
+    }
+
+
 def safe_rel_media_path(raw_rel: str | None) -> PurePosixPath:
     if not raw_rel:
         raise AppError("Missing media path", 400)
@@ -962,11 +1585,7 @@ def safe_rel_media_path(raw_rel: str | None) -> PurePosixPath:
 
 def proxy_video_path(dataset_path: Path, rel_path: str) -> Path:
     rel = safe_rel_media_path(rel_path)
-    proxy_root = (VIDEO_PROXY_ROOT / dataset_id(dataset_path)).resolve()
-    file_path = (proxy_root / Path(*rel.parts)).resolve()
-    if str(file_path) != str(proxy_root) and not str(file_path).startswith(str(proxy_root) + os.sep):
-        raise AppError("Invalid proxy media path", 403)
-    return file_path
+    return proxy_output_path_for_rel(dataset_path, rel.as_posix())
 
 
 def media_url(dataset_path: Path, rel_path: str) -> str:
@@ -1033,6 +1652,7 @@ def load_dataset(dataset_path: Path, refresh: bool = False) -> dict[str, Any]:
     with DATASET_CACHE_LOCK:
         DATASET_CACHE[cache_key] = dataset
     schedule_dataset_collector_prefetch(dataset_path, dataset)
+    schedule_proxy_build(dataset_path, dataset, reason="load")
     return dataset
 
 
@@ -2182,6 +2802,7 @@ def full_episode(
     episode = dataset["episode_by_index"].get(episode_index)
     if episode is None:
         raise AppError(f"Episode not found: {episode_index}", 404)
+    prioritize_proxy_episode(dataset_path, dataset, episode_index)
     videos = []
     for video in dataset["videos_by_episode"].get(episode_index, []):
         item = dict(video)
@@ -2820,6 +3441,7 @@ class QCRequestHandler(BaseHTTPRequestHandler):
                     "ok": True,
                     "dataset_path": str(dataset_path),
                     "dataset_id": dataset_id(dataset_path),
+                    "proxy_build": proxy_build_status(dataset_path),
                     "raw_episode_roots": [str(root) for root in configured_raw_episode_roots()],
                     "source_metadata": {
                         "dm3_enabled": dm3_enabled(),
@@ -2830,6 +3452,33 @@ class QCRequestHandler(BaseHTTPRequestHandler):
                     "time": utc_now(),
                 }
             )
+            return
+
+        if method == "GET" and parsed.path == "/api/proxy_status":
+            self.send_json(proxy_build_status(dataset_path))
+            return
+
+        if method == "GET" and parsed.path == "/api/proxy_history":
+            limit = parse_int(query_value(query, "limit"), PROXY_BUILD_HISTORY_LIMIT, 1, 5000)
+            include_all = query_value(query, "all") == "1"
+            self.send_json(proxy_build_history_payload(None if include_all else dataset_path, limit))
+            return
+
+        if method == "POST" and parsed.path == "/api/proxy_build":
+            payload = self.read_body_json()
+            action = str(payload.get("action") or "start").strip().lower()
+            if action == "cancel":
+                self.send_json({"ok": True, **cancel_proxy_build(dataset_path)})
+                return
+            episode_value = payload.get("episode_index")
+            if episode_value is not None:
+                episode_index = int(episode_value)
+                if episode_index not in dataset["episode_by_index"]:
+                    raise AppError(f"Episode not found: {episode_index}", 404)
+                self.send_json({"ok": True, **prioritize_proxy_episode(dataset_path, dataset, episode_index)})
+                return
+            force = bool(payload.get("force"))
+            self.send_json({"ok": True, **schedule_proxy_build(dataset_path, dataset, reason=action or "manual", force=force)})
             return
 
         if method == "GET" and parsed.path == "/api/users":
@@ -3244,7 +3893,7 @@ def main() -> None:
         print(f"Warning: default dataset could not be loaded: {exc}", file=sys.stderr, flush=True)
 
     address = (args.host, args.port)
-    httpd = ThreadingHTTPServer(address, QCRequestHandler)
+    httpd = QCThreadingHTTPServer(address, QCRequestHandler)
     print(f"LerobotQualityCheckPlatform listening on http://{args.host}:{args.port}", flush=True)
     if args.token:
         print("Token authentication is enabled. Add ?token=<token> to the URL.", flush=True)
