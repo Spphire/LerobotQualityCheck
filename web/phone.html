@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
     <title>LeRobot 手机质检</title>
     <link rel="icon" href="data:," />
-    <link rel="stylesheet" href="/styles.css?v=20260701-phone" />
+    <link rel="stylesheet" href="/styles.css?v=20260701-phone-compact-settings" />
     <script type="module" src="/app.js?v=20260702-action-queue"></script>
   </head>
   <body data-mode="phone">
@@ -27,8 +27,10 @@
           </header>
           <div id="trajectoryCanvas" class="trajectory-plot"></div>
           <div class="trajectory-legend">
-            <span class="legend-left-state">左手</span>
-            <span class="legend-right-state">右手</span>
+            <span class="legend-left-state">左 state</span>
+            <span class="legend-left-action">左 action</span>
+            <span class="legend-right-state">右 state</span>
+            <span class="legend-right-action">右 action</span>
           </div>
         </section>
 
@@ -102,15 +104,10 @@
           </section>
 
           <section class="filter-panel">
-            <input id="searchInput" type="search" placeholder="搜索 episode / uuid / 任务" />
+            <input id="searchInput" type="search" placeholder="输入 index 回车直接跳转，也可搜索 uuid / 任务" />
           </section>
 
           <section class="phone-status-panel review-panel">
-            <div class="status-actions">
-              <button id="rejectButton" class="reject-action" type="button">拒绝</button>
-              <button id="pendingButton" class="pending-action" type="button">待审</button>
-              <button id="acceptButton" class="accept-action" type="button">接收</button>
-            </div>
             <div class="keyboard-help" aria-label="手机手势控制提示">
               <span>左/右滑切换状态</span>
               <span>上滑下一条，下滑上一条</span>
@@ -119,38 +116,8 @@
             </div>
           </section>
 
-          <section class="phone-video-controls">
-            <div class="video-toolbar">
-              <button id="playAllButton" type="button">播放</button>
-              <button id="pauseAllButton" type="button">暂停</button>
-              <button id="restartAllButton" type="button">归零</button>
-              <select id="speedSelect">
-                <option value="0.5">0.5x</option>
-                <option value="1">1x</option>
-                <option value="1.5">1.5x</option>
-                <option value="2">2x</option>
-                <option value="3">3x</option>
-                <option value="5">5x</option>
-                <option value="10" selected>10x</option>
-              </select>
-              <label class="progress-control">
-                <input id="videoProgress" type="range" min="0" max="1000" value="0" />
-                <span id="videoTime">0%</span>
-              </label>
-            </div>
-          </section>
-
-          <div id="episodeList" class="episode-list" tabindex="-1"></div>
-
-          <section class="pager">
-            <button id="prevPageButton" type="button">上一页</button>
-            <span id="pageInfo">1 / 1</span>
-            <button id="nextPageButton" type="button">下一页</button>
-          </section>
-
           <section class="shortcut-panel">
             <a class="sidebar-link" href="/rank" data-context-link="/rank">排行榜</a>
-            <a class="sidebar-link" href="/" data-context-link="/">普通质检</a>
           </section>
         </section>
       </aside>

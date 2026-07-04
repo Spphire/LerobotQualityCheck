@@ -112,6 +112,50 @@ let trajectoryView = null;
 
 const el = {};
 
+const TRAJECTORY_SERIES_CONFIG = [
+  {
+    id: "leftState",
+    cssClass: "legend-left-state",
+    label: "左 state",
+    getData: (trajectory) => trajectory.left,
+    colors: { core: 0x4ade80, marker: 0x4ade80 },
+    radiusScale: 1,
+    endpointScale: 0.8,
+    opacity: 0.9,
+  },
+  {
+    id: "leftAction",
+    cssClass: "legend-left-action",
+    label: "左 action",
+    getData: (trajectory) => trajectory.action?.left,
+    colors: { core: 0x2dd4bf, marker: 0x2dd4bf },
+    radiusScale: 0.72,
+    endpointScale: 0.56,
+    opacity: 0.82,
+  },
+  {
+    id: "rightState",
+    cssClass: "legend-right-state",
+    label: "右 state",
+    getData: (trajectory) => trajectory.right,
+    colors: { core: 0xfb7185, marker: 0xfb7185 },
+    radiusScale: 1,
+    endpointScale: 0.8,
+    opacity: 0.9,
+  },
+  {
+    id: "rightAction",
+    cssClass: "legend-right-action",
+    label: "右 action",
+    getData: (trajectory) => trajectory.action?.right,
+    colors: { core: 0xfbbf24, marker: 0xf59e0b },
+    radiusScale: 0.72,
+    endpointScale: 0.56,
+    opacity: 0.82,
+  },
+];
+const PHONE_DEFAULT_PLAYBACK_RATE = 10;
+
 function $(id) {
   return document.getElementById(id);
 }
@@ -181,6 +225,17 @@ function initElements() {
     "phoneDrawerCloseButton",
   ].forEach((id) => {
     el[id] = $(id);
+  });
+}
+
+function renderTrajectoryLegends() {
+  document.querySelectorAll(".trajectory-legend").forEach((legend) => {
+    legend.replaceChildren(...TRAJECTORY_SERIES_CONFIG.map((series) => {
+      const item = document.createElement("span");
+      item.className = series.cssClass;
+      item.textContent = series.label;
+      return item;
+    }));
   });
 }
 
@@ -888,7 +943,7 @@ function renderCameraCanvases(videos) {
         setHeadVideoSize(video.videoWidth / video.videoHeight);
       }
       syncQuickVideoAspect(index, video);
-      video.playbackRate = Number(el.speedSelect?.value || 1);
+      video.playbackRate = currentPlaybackRate();
       syncVideoTimes(true);
       drawQuickVideoCanvases();
     };
@@ -1063,7 +1118,7 @@ function syncVideoTimes(force = false) {
   }
   const ratio = currentVideoRatio();
   const now = performance.now();
-  const rate = Math.max(1, Number(el.speedSelect?.value || 1));
+  const rate = Math.max(1, currentPlaybackRate());
   const driftTolerance = Math.max(0.2, rate * 0.025);
   state.hiddenVideos.forEach((video) => {
     if (!video || video === master || !Number.isFinite(video.duration) || video.duration <= 0) {
@@ -1300,13 +1355,16 @@ function compactPoints(points = []) {
   return points.filter(validPoint);
 }
 
+function trajectorySeries(trajectory) {
+  return TRAJECTORY_SERIES_CONFIG.map((config) => ({
+    ...config,
+    data: config.getData(trajectory) || {},
+  }));
+}
+
 function trajectoryAxisRanges(trajectory) {
-  const points = [
-    ...compactPoints(trajectory.left?.points || []),
-    ...compactPoints(trajectory.right?.points || []),
-    ...compactPoints(trajectory.action?.left?.points || []),
-    ...compactPoints(trajectory.action?.right?.points || []),
-  ];
+  const points = trajectorySeries(trajectory)
+    .flatMap((series) => compactPoints(series.data.points || []));
   const fallback = [-1, 1];
   if (!points.length) {
     return { x: fallback, y: fallback, z: fallback };
@@ -1486,7 +1544,7 @@ function normalizeVector(vector) {
   return [vector[0] / length, vector[1] / length, vector[2] / length];
 }
 
-function cameraFromHeadDefaultAxis(trajectory) {
+function cameraFromHeadMinusZ(trajectory) {
   const points = trajectory.ego?.points || [];
   const quaternions = trajectory.ego?.quaternions || [];
   const firstPose = points
@@ -1499,24 +1557,17 @@ function cameraFromHeadDefaultAxis(trajectory) {
   if (!firstPose) {
     return fallback;
   }
-  const transform = String(trajectory.metadata?.transform || "");
-  const deviceType = String(trajectory.device_type || trajectory.metadata?.device_type || "").toLowerCase();
-  const collectionMode = String(trajectory.metadata?.collection_mode || "").toLowerCase();
-  const isTeleop = transform === "teleop_rx_minus_90"
-    || deviceType.includes("teleoperation")
-    || collectionMode.includes("teleoperation");
-  const headLocalAxis = isTeleop ? [0, 0, 1] : [0, 0, -1];
-  const viewDirection = normalizeVector(rotateVectorByQuat(headLocalAxis, firstPose.quat));
-  if (!viewDirection) {
+  const headMinusZ = normalizeVector(rotateVectorByQuat([0, 0, -1], firstPose.quat));
+  if (!headMinusZ) {
     return fallback;
   }
   const distance = 1.75;
   return {
     up: { x: 0, y: 1, z: 0 },
     eye: {
-      x: -viewDirection[0] * distance,
-      y: -viewDirection[1] * distance,
-      z: -viewDirection[2] * distance,
+      x: -headMinusZ[0] * distance,
+      y: -headMinusZ[1] * distance,
+      z: -headMinusZ[2] * distance,
     },
   };
 }
@@ -1686,7 +1737,7 @@ function renderTrajectory3DPlotlyLegacy(trajectory) {
   state.trajectoryHighlightTraceIndexes = Array.from({ length: 12 }, (_, index) => highlightStart + index);
   state.lastTrajectoryHighlightFrame = null;
   state.lastTrajectoryHighlightAt = 0;
-  state.trajectoryCamera = cloneTrajectoryCamera(cameraFromHeadDefaultAxis(trajectory));
+  state.trajectoryCamera = cloneTrajectoryCamera(cameraFromHeadMinusZ(trajectory));
   state.trajectoryCameraRevision = 0;
   const axisRanges = trajectoryAxisRanges(trajectory);
   const axisStyle = {
@@ -1927,11 +1978,11 @@ function replaceObjectGeometry(object, geometry) {
   previous?.dispose?.();
 }
 
-function addTrajectoryTube(scene, points, color, radius, opacity = 0.86) {
+function addTrajectoryTube(scene, points, series, radius) {
   const core = createTubeMesh(
     points,
-    radius,
-    createMeshMaterial(color, opacity, false),
+    radius * series.radiusScale,
+    createMeshMaterial(series.colors.core, series.opacity, false),
   );
   scene.add(core);
 }
@@ -2013,11 +2064,8 @@ function setAxisLineSegments(line, segments) {
 }
 
 function createDynamicHand(scene, colors, radius, markerRadius) {
-  const glowMaterial = createMeshMaterial(colors.flowGlow, 0.64, true);
-  glowMaterial.userData.baseOpacity = 0.64;
   const coreMaterial = createMeshMaterial(colors.flowCore, 0.96, true);
   coreMaterial.userData.baseOpacity = 0.96;
-  const flowGlow = createTubeMesh([], radius * 5.5, glowMaterial);
   const flowCore = createTubeMesh([], radius * 2.1, coreMaterial);
   const marker = new Three3D.Mesh(
     new Three3D.SphereGeometry(markerRadius, 20, 14),
@@ -2030,22 +2078,19 @@ function createDynamicHand(scene, colors, radius, markerRadius) {
     createAxisLine(0x35d06f),
     createAxisLine(0x38bdf8),
   ];
-  scene.add(flowGlow, flowCore, marker, ...axes);
+  scene.add(flowCore, marker, ...axes);
   return {
-    flowGlow,
     flowCore,
     marker,
     axes,
     radii: {
-      glow: radius * 5.5,
       core: radius * 2.1,
     },
-    pulseMaterials: [glowMaterial, coreMaterial],
+    pulseMaterials: [coreMaterial],
   };
 }
 
 function updateDynamicHand(hand, sample, quat) {
-  replaceObjectGeometry(hand.flowGlow, createTubeGeometry(sample.trail, hand.radii.glow));
   replaceObjectGeometry(hand.flowCore, createTubeGeometry(sample.trail, hand.radii.core));
   if (sample.point) {
     hand.marker.position.copy(pointToVector3(sample.point));
@@ -2087,14 +2132,11 @@ function createTrajectoryView(trajectory) {
 
   const radius = Math.max(bounds.span * 0.0025, 0.0018);
   const markerRadius = Math.max(bounds.span * 0.011, 0.0045);
-  addTrajectoryTube(scene, trajectory.left?.points || [], 0x4ade80, radius, 0.9);
-  addTrajectoryTube(scene, trajectory.action?.left?.points || [], 0x2dd4bf, radius * 0.72, 0.82);
-  addTrajectoryTube(scene, trajectory.right?.points || [], 0xfb7185, radius, 0.9);
-  addTrajectoryTube(scene, trajectory.action?.right?.points || [], 0xf59e0b, radius * 0.72, 0.82);
-  addEndpointMarkers(scene, trajectory.left?.points || [], 0x4ade80, markerRadius * 0.8);
-  addEndpointMarkers(scene, trajectory.action?.left?.points || [], 0x2dd4bf, markerRadius * 0.56);
-  addEndpointMarkers(scene, trajectory.right?.points || [], 0xfb7185, markerRadius * 0.8);
-  addEndpointMarkers(scene, trajectory.action?.right?.points || [], 0xf59e0b, markerRadius * 0.56);
+  trajectorySeries(trajectory).forEach((series) => {
+    const points = series.data.points || [];
+    addTrajectoryTube(scene, points, series, radius);
+    addEndpointMarkers(scene, points, series.colors.marker, markerRadius * series.endpointScale);
+  });
 
   const camera = new Three3D.PerspectiveCamera(
     45,
@@ -2103,7 +2145,7 @@ function createTrajectoryView(trajectory) {
     Math.max(bounds.span * 30, 10),
   );
   camera.up.set(0, 1, 0);
-  const cameraEye = cameraFromHeadDefaultAxis(trajectory).eye;
+  const cameraEye = cameraFromHeadMinusZ(trajectory).eye;
   const eyeVector = new Three3D.Vector3(cameraEye.x, cameraEye.y, cameraEye.z);
   if (eyeVector.lengthSq() < 1e-8) {
     eyeVector.set(1.35, 0.85, 1.35);
@@ -2122,12 +2164,10 @@ function createTrajectoryView(trajectory) {
   controls.update();
 
   const left = createDynamicHand(scene, {
-    flowGlow: 0x86efac,
     flowCore: 0xbbf7d0,
     marker: 0x22c55e,
   }, radius, markerRadius);
   const right = createDynamicHand(scene, {
-    flowGlow: 0xfda4af,
     flowCore: 0xffd1d8,
     marker: 0xef4444,
   }, radius, markerRadius);
@@ -2705,7 +2745,7 @@ async function moveEpisode(delta) {
 }
 
 function scrollCurrentIntoView() {
-  const item = el.episodeList.querySelector(`.episode-item[data-index="${state.currentIndex}"]`);
+  const item = el.episodeList?.querySelector(`.episode-item[data-index="${state.currentIndex}"]`);
   item?.scrollIntoView({ block: "nearest" });
 }
 
@@ -2713,8 +2753,16 @@ function focusEpisodeNavigation() {
   el.episodeList?.focus({ preventScroll: true });
 }
 
+function currentPlaybackRate() {
+  const configured = Number(el.speedSelect?.value);
+  if (Number.isFinite(configured) && configured > 0) {
+    return configured;
+  }
+  return state.phone ? PHONE_DEFAULT_PLAYBACK_RATE : 1;
+}
+
 function applyPlaybackRate() {
-  const rate = Number(el.speedSelect?.value || 1);
+  const rate = currentPlaybackRate();
   state.hiddenVideos.forEach((video) => {
     if (video) {
       video.playbackRate = rate;
@@ -2939,6 +2987,47 @@ function shouldIgnorePhoneSwipe(event) {
   ));
 }
 
+function startPhoneSwipe(event, point, id) {
+  if (!point || shouldIgnorePhoneSwipe(event)) {
+    state.phoneSwipe = null;
+    return;
+  }
+  state.phoneSwipe = {
+    id,
+    x: point.clientX,
+    y: point.clientY,
+    time: performance.now(),
+  };
+}
+
+function finishPhoneSwipe(point, id) {
+  const swipe = state.phoneSwipe;
+  if (!point || !swipe || swipe.id !== id) {
+    return;
+  }
+  state.phoneSwipe = null;
+  const dx = point.clientX - swipe.x;
+  const dy = point.clientY - swipe.y;
+  const absX = Math.abs(dx);
+  const absY = Math.abs(dy);
+  const elapsed = performance.now() - swipe.time;
+  if (elapsed > 1200 || Math.max(absX, absY) < 42 || Math.max(absX, absY) / Math.max(1, Math.min(absX, absY)) < 1.25) {
+    return;
+  }
+  state.phoneSuppressClickUntil = performance.now() + 450;
+  if (absX > absY) {
+    enqueueUserAction(() => cycleStatus(dx > 0 ? 1 : -1));
+  } else {
+    enqueueUserAction(() => moveEpisode(dy < 0 ? 1 : -1));
+  }
+}
+
+function cancelPhoneSwipe(id = null) {
+  if (id === null || state.phoneSwipe?.id === id) {
+    state.phoneSwipe = null;
+  }
+}
+
 function bindPhoneControls() {
   if (!state.phone) {
     return;
@@ -2958,40 +3047,37 @@ function bindPhoneControls() {
 
   const surface = document.querySelector(".phone-main");
   surface?.addEventListener("pointerdown", (event) => {
-    if (shouldIgnorePhoneSwipe(event)) {
-      state.phoneSwipe = null;
+    if (event.pointerType === "touch") {
       return;
     }
-    state.phoneSwipe = {
-      id: event.pointerId,
-      x: event.clientX,
-      y: event.clientY,
-      time: performance.now(),
-    };
+    startPhoneSwipe(event, event, event.pointerId);
   }, { passive: true });
   surface?.addEventListener("pointerup", (event) => {
-    const swipe = state.phoneSwipe;
-    state.phoneSwipe = null;
-    if (!swipe || swipe.id !== event.pointerId) {
+    if (event.pointerType === "touch") {
       return;
     }
-    const dx = event.clientX - swipe.x;
-    const dy = event.clientY - swipe.y;
-    const absX = Math.abs(dx);
-    const absY = Math.abs(dy);
-    const elapsed = performance.now() - swipe.time;
-    if (elapsed > 1200 || Math.max(absX, absY) < 42 || Math.max(absX, absY) / Math.max(1, Math.min(absX, absY)) < 1.25) {
-      return;
-    }
-    state.phoneSuppressClickUntil = performance.now() + 450;
-    if (absX > absY) {
-      enqueueUserAction(() => cycleStatus(dx > 0 ? 1 : -1));
-    } else {
-      enqueueUserAction(() => moveEpisode(dy < 0 ? 1 : -1));
+    finishPhoneSwipe(event, event.pointerId);
+  }, { passive: true });
+  surface?.addEventListener("pointercancel", (event) => {
+    if (event.pointerType !== "touch") {
+      cancelPhoneSwipe(event.pointerId);
     }
   }, { passive: true });
-  surface?.addEventListener("pointercancel", () => {
-    state.phoneSwipe = null;
+  surface?.addEventListener("touchstart", (event) => {
+    const touch = event.changedTouches?.[0] || event.touches?.[0];
+    startPhoneSwipe(event, touch, touch?.identifier ?? "touch");
+  }, { passive: true });
+  surface?.addEventListener("touchend", (event) => {
+    const swipe = state.phoneSwipe;
+    const changed = Array.from(event.changedTouches || []);
+    const touch = changed.find((item) => item.identifier === swipe?.id) || changed[0];
+    finishPhoneSwipe(touch, touch?.identifier ?? "touch");
+  }, { passive: true });
+  surface?.addEventListener("touchcancel", (event) => {
+    const swipe = state.phoneSwipe;
+    const changed = Array.from(event.changedTouches || []);
+    const touch = changed.find((item) => item.identifier === swipe?.id) || changed[0];
+    cancelPhoneSwipe(touch?.identifier ?? "touch");
   }, { passive: true });
 }
 
@@ -3290,6 +3376,7 @@ function animationLoop(now = 0) {
 async function main() {
   initElements();
   initReviveAssets();
+  renderTrajectoryLegends();
   renderIssueOptions();
   await loadUserSession();
   bindEvents();
