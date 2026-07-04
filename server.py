@@ -133,6 +133,12 @@ class QCThreadingHTTPServer(ThreadingHTTPServer):
     request_queue_size = max(16, int(os.environ.get("LQCP_HTTP_REQUEST_QUEUE_SIZE", "128")))
 
 
+class QCThreadingHTTPServer(ThreadingHTTPServer):
+    daemon_threads = True
+    allow_reuse_address = True
+    request_queue_size = max(16, int(os.environ.get("LQCP_HTTP_REQUEST_QUEUE_SIZE", "128")))
+
+
 class AppError(Exception):
     def __init__(self, message: str, status: int = 400):
         super().__init__(message)
@@ -1746,8 +1752,8 @@ def collector_from_metadata(metadata: dict[str, Any]) -> str:
         ("user",),
         ("username",),
         ("user_name",),
-        ("采集人",),
-        ("采集员",),
+        ("???",),
+        ("???",),
         ("metadata", "collector"),
         ("metadata", "operator"),
         ("metadata", "created_by"),
@@ -2702,7 +2708,7 @@ def rank_payload(dataset_path: Path, dataset: dict[str, Any], store: dict[str, A
         collector = str((cached or {}).get("collector") or "").strip()
         if not collector:
             schedule_collector_fetch(dataset_path, episode, priority=20)
-            collector = "未知采集人"
+            collector = "?????"
         stat = collector_stats.setdefault(
             collector,
             {
@@ -2711,7 +2717,7 @@ def rank_payload(dataset_path: Path, dataset: dict[str, Any], store: dict[str, A
                 "reject": 0,
                 "accept": 0,
                 "pending": 0,
-                "known": collector != "未知采集人",
+                "known": collector != "?????",
                 "rejected_episodes": [],
             },
         )
@@ -3902,3 +3908,4 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+
