@@ -7,3 +7,4 @@ video_proxy/
 server.log
 server.dev.log
 .env
+.env.*
