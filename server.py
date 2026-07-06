@@ -61,8 +61,23 @@ def env_float(name: str, default: float, minimum: float | None = None, maximum: 
     return value
 
 
+def load_project_env_file(path: Path) -> None:
+    if not path.exists():
+        return
+    for raw_line in path.read_text(encoding="utf-8").splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        key = key.strip()
+        value = value.strip().strip('"').strip("'")
+        if key and key not in os.environ:
+            os.environ[key] = value
+
+
 DEFAULT_DATASET = "/mnt/nm_dataset/dataset/giftbox_0628_1912episodes"
 PROJECT_ROOT = Path(__file__).resolve().parent
+load_project_env_file(PROJECT_ROOT / ".env.dm3")
 STATIC_ROOT = PROJECT_ROOT / "web"
 QC_ROOT = PROJECT_ROOT / "qc_results"
 VIDEO_PROXY_ROOT = PROJECT_ROOT / "video_proxy"
