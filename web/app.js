@@ -2,6 +2,17 @@ const DEFAULT_DATASET = "/mnt/nm_dataset/dataset/giftbox_0628_1912episodes";
 const STATUS_ORDER = ["reject", "pending", "accept"];
 const QC_VIEW_STORAGE_KEY = "lqcp.qcViewMode";
 const QC_VIEW_QUERY_KEY = "view";
+const ROBOPOCKET_PRO_HEAD_CAMERA = {
+  imageWidth: 640,
+  imageHeight: 480,
+  matrix: [
+    [374.98844113, 0, 335.88487191],
+    [0, 374.83395961, 264.74203765],
+    [0, 0, 1],
+  ],
+  dist: [0.025715207, -0.0621292964, 0.0001586866, -0.0005806411, 0.0230209656],
+  axisLength: 0.045,
+};
 
 function qcRouteMode(pathname = window.location.pathname) {
   if (pathname === "/" || pathname === "") {
@@ -166,6 +177,7 @@ const state = {
   currentIndex: null,
   selectedStatus: "pending",
   hiddenVideos: [],
+  headHandOverlayCanvas: null,
   headVideoIndex: 0,
   quickVideoIndexes: { left: 0, head: 0, right: 0 },
   headVideoAspect: 16 / 9,
@@ -1255,8 +1267,328 @@ function drawVideoToCanvas(canvas, video, emptyMessage = "无视频") {
   ctx.drawImage(video, x, y, drawWidth, drawHeight);
 }
 
+function robopocketProDeviceType(value = "") {
+  const normalized = String(value || "")
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "");
+  return normalized.includes("robopocket20pro")
+    || normalized.includes("robopocket2pro")
+    || normalized.includes("robopocketpro");
+}
+
+function currentDeviceType() {
+  return state.trajectory?.metadata?.device_type
+    || state.trajectory?.device_type
+    || state.current?.episode?.device_type
+    || state.info?.device_type
+    || "";
+}
+
+function shouldDrawHeadHandOverlay() {
+  return Boolean(state.trajectory && robopocketProDeviceType(currentDeviceType()));
+}
+
+function ensureHeadHandOverlayCanvas() {
+  if (state.headHandOverlayCanvas?.isConnected) {
+    return state.headHandOverlayCanvas;
+  }
+  const video = el.quickVideoHead;
+  const card = video?.closest(".quick-video-card");
+  if (!video || !card) {
+    return null;
+  }
+  const canvas = document.createElement("canvas");
+  canvas.className = "head-hand-overlay";
+  canvas.setAttribute("aria-hidden", "true");
+  card.appendChild(canvas);
+  state.headHandOverlayCanvas = canvas;
+  return canvas;
+}
+
+function clearHeadHandOverlay() {
+  const canvas = state.headHandOverlayCanvas;
+  if (!canvas) {
+    return;
+  }
+  const ctx = canvas.getContext("2d");
+  if (ctx) {
+    ctx.clearRect(0, 0, canvas.width || 0, canvas.height || 0);
+  }
+  canvas.hidden = true;
+}
+
+function headVideoDrawRect(video) {
+  const rect = video?.getBoundingClientRect();
+  if (!rect || rect.width <= 0 || rect.height <= 0 || !video.videoWidth || !video.videoHeight) {
+    return null;
+  }
+  const mediaAspect = video.videoWidth / video.videoHeight;
+  const boxAspect = rect.width / rect.height;
+  if (boxAspect > mediaAspect) {
+    const width = rect.height * mediaAspect;
+    return {
+      left: rect.left + (rect.width - width) / 2,
+      top: rect.top,
+      width,
+      height: rect.height,
+    };
+  }
+  const height = rect.width / mediaAspect;
+  return {
+    left: rect.left,
+    top: rect.top + (rect.height - height) / 2,
+    width: rect.width,
+    height,
+  };
+}
+
+function positionHeadHandOverlay(canvas, video) {
+  const card = video.closest(".quick-video-card");
+  const cardRect = card?.getBoundingClientRect();
+  const drawRect = headVideoDrawRect(video);
+  if (!cardRect || !drawRect) {
+    return null;
+  }
+  const dpr = Math.max(1, Math.min(3, window.devicePixelRatio || 1));
+  const width = Math.max(1, Math.round(drawRect.width));
+  const height = Math.max(1, Math.round(drawRect.height));
+  const backingWidth = Math.max(1, Math.round(width * dpr));
+  const backingHeight = Math.max(1, Math.round(height * dpr));
+  canvas.hidden = false;
+  canvas.style.left = `${drawRect.left - cardRect.left}px`;
+  canvas.style.top = `${drawRect.top - cardRect.top}px`;
+  canvas.style.width = `${width}px`;
+  canvas.style.height = `${height}px`;
+  if (canvas.width !== backingWidth || canvas.height !== backingHeight) {
+    canvas.width = backingWidth;
+    canvas.height = backingHeight;
+  }
+  const ctx = canvas.getContext("2d");
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx.clearRect(0, 0, width, height);
+  return { ctx, width, height };
+}
+
+function mat3Transpose(matrix) {
+  return [
+    [matrix[0][0], matrix[1][0], matrix[2][0]],
+    [matrix[0][1], matrix[1][1], matrix[2][1]],
+    [matrix[0][2], matrix[1][2], matrix[2][2]],
+  ];
+}
+
+function mat3Vec(matrix, vector) {
+  return [
+    matrix[0][0] * vector[0] + matrix[0][1] * vector[1] + matrix[0][2] * vector[2],
+    matrix[1][0] * vector[0] + matrix[1][1] * vector[1] + matrix[1][2] * vector[2],
+    matrix[2][0] * vector[0] + matrix[2][1] * vector[1] + matrix[2][2] * vector[2],
+  ];
+}
+
+function mat3Multiply(a, b) {
+  const out = [[0, 0, 0], [0, 0, 0], [0, 0, 0]];
+  for (let row = 0; row < 3; row += 1) {
+    for (let col = 0; col < 3; col += 1) {
+      out[row][col] = a[row][0] * b[0][col] + a[row][1] * b[1][col] + a[row][2] * b[2][col];
+    }
+  }
+  return out;
+}
+
+function rotationMatrixWxyz(quat) {
+  if (!validQuat(quat)) {
+    return null;
+  }
+  const [w, x, y, z] = normalizeQuat(quat);
+  return [
+    [1 - 2 * (y * y + z * z), 2 * (x * y - z * w), 2 * (x * z + y * w)],
+    [2 * (x * y + z * w), 1 - 2 * (x * x + z * z), 2 * (y * z - x * w)],
+    [2 * (x * z - y * w), 2 * (y * z + x * w), 1 - 2 * (x * x + y * y)],
+  ];
+}
+
+function projectRobopocketHeadPoint(point, width, height) {
+  if (!Array.isArray(point) || point.length < 3 || point[2] <= 1e-4) {
+    return null;
+  }
+  const sx = width / ROBOPOCKET_PRO_HEAD_CAMERA.imageWidth;
+  const sy = height / ROBOPOCKET_PRO_HEAD_CAMERA.imageHeight;
+  const fx = ROBOPOCKET_PRO_HEAD_CAMERA.matrix[0][0] * sx;
+  const fy = ROBOPOCKET_PRO_HEAD_CAMERA.matrix[1][1] * sy;
+  const cx = ROBOPOCKET_PRO_HEAD_CAMERA.matrix[0][2] * sx;
+  const cy = ROBOPOCKET_PRO_HEAD_CAMERA.matrix[1][2] * sy;
+  const [k1, k2, p1, p2, k3] = ROBOPOCKET_PRO_HEAD_CAMERA.dist;
+  const x = point[0] / point[2];
+  const y = point[1] / point[2];
+  const r2 = x * x + y * y;
+  const r4 = r2 * r2;
+  const r6 = r4 * r2;
+  const radial = 1 + k1 * r2 + k2 * r4 + k3 * r6;
+  const xDist = x * radial + 2 * p1 * x * y + p2 * (r2 + 2 * x * x);
+  const yDist = y * radial + p1 * (r2 + 2 * y * y) + 2 * p2 * x * y;
+  const u = fx * xDist + cx;
+  const v = fy * yDist + cy;
+  if (!Number.isFinite(u) || !Number.isFinite(v)) {
+    return null;
+  }
+  return { x: u, y: v, inFrame: u >= -30 && u <= width + 30 && v >= -30 && v <= height + 30 };
+}
+
+function wristCameraPose(side, index) {
+  const trajectory = state.trajectory;
+  const egoPoint = trajectory?.ego?.points?.[index];
+  const egoQuat = trajectory?.ego?.quaternions?.[index];
+  const sidePoint = trajectory?.[side]?.points?.[index];
+  const sideQuat = trajectory?.[side]?.quaternions?.[index];
+  if (!validPoint(egoPoint) || !validQuat(egoQuat) || !validPoint(sidePoint) || !validQuat(sideQuat)) {
+    return null;
+  }
+  const egoRotation = rotationMatrixWxyz(egoQuat);
+  const wristRotation = rotationMatrixWxyz(sideQuat);
+  if (!egoRotation || !wristRotation) {
+    return null;
+  }
+  const cameraFromEgo = [[1, 0, 0], [0, -1, 0], [0, 0, -1]];
+  const egoInv = mat3Transpose(egoRotation);
+  const delta = [
+    sidePoint[0] - egoPoint[0],
+    sidePoint[1] - egoPoint[1],
+    sidePoint[2] - egoPoint[2],
+  ];
+  const center = mat3Vec(cameraFromEgo, mat3Vec(egoInv, delta));
+  const axes = mat3Multiply(cameraFromEgo, mat3Multiply(egoInv, wristRotation));
+  return { center, axes };
+}
+
+function drawProjectedTrail(ctx, side, frame, width, height, color) {
+  const frames = state.trajectory?.frames || [];
+  const points = state.trajectory?.[side]?.points || [];
+  if (!points.length) {
+    return;
+  }
+  const sample = trajectorySample(points, frames, frame);
+  if (sample.index < 0) {
+    return;
+  }
+  const projected = [];
+  const start = Math.max(0, sample.index - 24);
+  for (let index = start; index <= sample.index; index += 1) {
+    const pose = wristCameraPose(side, index);
+    const point = pose ? projectRobopocketHeadPoint(pose.center, width, height) : null;
+    if (point?.inFrame) {
+      projected.push(point);
+    } else if (projected.length) {
+      projected.push(null);
+    }
+  }
+  ctx.save();
+  ctx.lineWidth = 2;
+  ctx.lineCap = "round";
+  ctx.lineJoin = "round";
+  ctx.strokeStyle = color.trail;
+  ctx.shadowColor = color.glow;
+  ctx.shadowBlur = 8;
+  ctx.beginPath();
+  let hasTrailPoint = false;
+  projected.forEach((point) => {
+    if (!point) {
+      hasTrailPoint = false;
+      return;
+    }
+    if (!hasTrailPoint) {
+      ctx.moveTo(point.x, point.y);
+      hasTrailPoint = true;
+    } else {
+      ctx.lineTo(point.x, point.y);
+    }
+  });
+  if (hasTrailPoint) {
+    ctx.stroke();
+  }
+  ctx.restore();
+}
+
+function drawProjectedWrist(ctx, side, frame, width, height, color) {
+  const frames = state.trajectory?.frames || [];
+  const points = state.trajectory?.[side]?.points || [];
+  const sample = trajectorySample(points, frames, frame);
+  if (sample.index < 0) {
+    return;
+  }
+  const pose = wristCameraPose(side, sample.index);
+  if (!pose) {
+    return;
+  }
+  const center = projectRobopocketHeadPoint(pose.center, width, height);
+  if (!center?.inFrame) {
+    return;
+  }
+  const axisLength = ROBOPOCKET_PRO_HEAD_CAMERA.axisLength;
+  const axisColors = ["#ff453a", "#32d74b", "#0a84ff"];
+  ctx.save();
+  ctx.lineCap = "round";
+  [0, 1, 2].forEach((axis) => {
+    const axisEnd = [
+      pose.center[0] + pose.axes[0][axis] * axisLength,
+      pose.center[1] + pose.axes[1][axis] * axisLength,
+      pose.center[2] + pose.axes[2][axis] * axisLength,
+    ];
+    const projected = projectRobopocketHeadPoint(axisEnd, width, height);
+    if (!projected) {
+      return;
+    }
+    ctx.strokeStyle = axisColors[axis];
+    ctx.lineWidth = 2.2;
+    ctx.shadowColor = "rgba(0, 0, 0, 0.4)";
+    ctx.shadowBlur = 2;
+    ctx.beginPath();
+    ctx.moveTo(center.x, center.y);
+    ctx.lineTo(projected.x, projected.y);
+    ctx.stroke();
+    ctx.fillStyle = axisColors[axis];
+    ctx.beginPath();
+    ctx.arc(projected.x, projected.y, 2.3, 0, Math.PI * 2);
+    ctx.fill();
+  });
+  ctx.shadowColor = color.glow;
+  ctx.shadowBlur = 10;
+  ctx.fillStyle = color.core;
+  ctx.beginPath();
+  ctx.arc(center.x, center.y, 5, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.shadowBlur = 0;
+  ctx.strokeStyle = "rgba(255, 255, 255, 0.92)";
+  ctx.lineWidth = 1.5;
+  ctx.beginPath();
+  ctx.arc(center.x, center.y, 8, 0, Math.PI * 2);
+  ctx.stroke();
+  ctx.fillStyle = color.core;
+  ctx.font = "600 12px system-ui, -apple-system, BlinkMacSystemFont, sans-serif";
+  ctx.textAlign = "left";
+  ctx.textBaseline = "middle";
+  ctx.fillText(side === "left" ? "L" : "R", center.x + 10, center.y - 8);
+  ctx.restore();
+}
+
 function drawHeadVideoCanvas() {
-  return;
+  const video = el.quickVideoHead;
+  const canvas = ensureHeadHandOverlayCanvas();
+  if (!video || !canvas || !shouldDrawHeadHandOverlay() || video.readyState < 2 || !video.videoWidth || !video.videoHeight) {
+    clearHeadHandOverlay();
+    return;
+  }
+  const target = positionHeadHandOverlay(canvas, video);
+  if (!target) {
+    clearHeadHandOverlay();
+    return;
+  }
+  const frame = currentFrameNumber();
+  const sides = [
+    ["left", { core: "#ffb020", trail: "rgba(255, 176, 32, 0.82)", glow: "rgba(255, 176, 32, 0.7)" }],
+    ["right", { core: "#64d2ff", trail: "rgba(100, 210, 255, 0.82)", glow: "rgba(100, 210, 255, 0.72)" }],
+  ];
+  sides.forEach(([side, color]) => drawProjectedTrail(target.ctx, side, frame, target.width, target.height, color));
+  sides.forEach(([side, color]) => drawProjectedWrist(target.ctx, side, frame, target.width, target.height, color));
 }
 
 function quickVideoEntries() {
@@ -1430,6 +1762,7 @@ function drawQuickVideoCanvases() {
     const sourceVideo = state.hiddenVideos[state.quickVideoIndexes[key]];
     video.dataset.emptyMessage = sourceVideo?.currentSrc ? "" : message;
   });
+  drawHeadVideoCanvas();
 }
 
 function currentFrameNumber() {
@@ -1479,11 +1812,13 @@ function setAllVideoProgress(ratio) {
 
 function syncVideoTimes(force = false) {
   if (state.isDraggingProgress) {
+    drawHeadVideoCanvas();
     return;
   }
   const master = masterVideo();
   if (!master) {
     updateProgressUI(0);
+    drawHeadVideoCanvas();
     return;
   }
   const ratio = currentVideoRatio();
@@ -1503,6 +1838,7 @@ function syncVideoTimes(force = false) {
     }
   });
   updateProgressUI(ratio);
+  drawHeadVideoCanvas();
 }
 
 function nearestFiniteIndex(values, index) {
@@ -2555,6 +2891,7 @@ function createTrajectoryView(trajectory) {
 function renderTrajectory3D(trajectory) {
   state.trajectory = trajectory;
   drawGripperCurves();
+  drawHeadVideoCanvas();
   if (!Three3D || !OrbitControls3D) {
     return;
   }
@@ -2660,6 +2997,8 @@ function scheduleTrajectoryForEpisode(episodeIndex) {
 function renderCurrent(current) {
   state.current = current;
   state.currentIndex = current?.episode?.episode_index ?? null;
+  state.trajectory = null;
+  clearHeadHandOverlay();
   if (state.currentIndex === null) {
     resetNavigationAnchor();
   }

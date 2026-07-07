@@ -851,6 +851,7 @@ canvas {
 }
 
 .quick-video-card {
+  position: relative;
   display: grid;
   grid-template-rows: 30px minmax(0, 1fr);
   min-width: 0;
@@ -877,6 +878,12 @@ canvas {
 .quick-video-card video {
   width: 100%;
   height: 100%;
+}
+
+.head-hand-overlay {
+  position: absolute;
+  z-index: 2;
+  pointer-events: none;
 }
 
 .frames-layout {
