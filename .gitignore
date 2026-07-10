@@ -4,6 +4,7 @@ qc_results/
 exports/
 verification/
 video_proxy/
+remote_dataset_cache/
 server.log
 server.dev.log
 .env
