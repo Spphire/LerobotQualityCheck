@@ -14,6 +14,8 @@ import posixpath
 import queue
 import re
 import secrets
+import shlex
+import shutil
 import sqlite3
 import subprocess
 import sys
@@ -81,6 +83,9 @@ load_project_env_file(PROJECT_ROOT / ".env.dm3")
 STATIC_ROOT = PROJECT_ROOT / "web"
 QC_ROOT = PROJECT_ROOT / "qc_results"
 VIDEO_PROXY_ROOT = PROJECT_ROOT / "video_proxy"
+REMOTE_DATASET_CACHE_ROOT = Path(
+    os.environ.get("LQCP_REMOTE_DATASET_CACHE_ROOT", str(PROJECT_ROOT / "remote_dataset_cache"))
+).expanduser().resolve()
 SETTINGS_PATH = QC_ROOT / "settings.json"
 USER_SESSIONS_DB_PATH = QC_ROOT / "user_sessions.db"
 PROXY_BUILD_HISTORY_PATH = QC_ROOT / "proxy_build_history.jsonl"
@@ -106,6 +111,16 @@ PROXY_GPU_MEMORY_MAX_RATIO = env_float("LQCP_PROXY_GPU_MEMORY_MAX_RATIO", 0.80, 
 PROXY_GPU_WORKERS_PER_GPU = env_int("LQCP_PROXY_GPU_WORKERS_PER_GPU", 2, minimum=1, maximum=8)
 PROXY_GPU_FALLBACK_CPU = env_flag("LQCP_PROXY_GPU_FALLBACK_CPU", True)
 PROXY_BUILD_HISTORY_LIMIT = env_int("LQCP_PROXY_BUILD_HISTORY_LIMIT", 200, minimum=1, maximum=5000)
+REMOTE_DATASET_SSH_IDENTITY = os.environ.get(
+    "LQCP_REMOTE_DATASET_SSH_IDENTITY",
+    "/root/.ssh/id_ed25519_lqcp_4110",
+).strip()
+REMOTE_DATASET_SYNC_TIMEOUT_SECONDS = env_int(
+    "LQCP_REMOTE_DATASET_SYNC_TIMEOUT",
+    3600,
+    minimum=60,
+    maximum=24 * 60 * 60,
+)
 
 STATUS_VALUES = {"reject", "pending", "accept", "unlabeled"}
 STATUS_ALIASES = {"bad": "reject", "review": "pending", "good": "accept"}
@@ -131,6 +146,7 @@ COLLECTOR_CACHE_LOCK = threading.Lock()
 LABEL_LOCK = threading.Lock()
 PRESENCE_LOCK = threading.Lock()
 SETTINGS_LOCK = threading.Lock()
+REMOTE_DATASET_LOCK = threading.Lock()
 USER_SESSION_LOCK = threading.Lock()
 PROXY_BUILD_LOCK = threading.Lock()
 PROXY_BUILD_HISTORY_LOCK = threading.Lock()
@@ -267,6 +283,157 @@ def write_text_atomic(path: Path, text: str) -> None:
     os.replace(tmp_path, path)
 
 
+def is_remote_dataset_uri(raw_path: str | None) -> bool:
+    return urlparse(str(raw_path or "").strip()).scheme.lower() == "ssh"
+
+
+def parse_remote_dataset_uri(raw_path: str) -> dict[str, Any]:
+    parsed = urlparse(raw_path)
+    if parsed.scheme.lower() != "ssh":
+        raise AppError("Remote dataset URI must use ssh://", 400)
+    if parsed.password:
+        raise AppError("Password-bearing SSH URIs are not supported; configure a key instead", 400)
+    if not parsed.hostname:
+        raise AppError("Remote dataset URI is missing a host", 400)
+    remote_path = unquote(parsed.path or "")
+    if not remote_path.startswith("/") or ".." in PurePosixPath(remote_path).parts:
+        raise AppError("Remote dataset path must be an absolute path without '..'", 400)
+    username = parsed.username or "root"
+    port = parsed.port or 22
+    canonical = f"ssh://{username}@{parsed.hostname}:{port}{remote_path.rstrip('/')}"
+    return {
+        "source": canonical,
+        "username": username,
+        "hostname": parsed.hostname,
+        "port": port,
+        "remote_path": remote_path.rstrip("/"),
+        "target": f"{username}@{parsed.hostname}",
+    }
+
+
+def remote_dataset_cache_path(raw_path: str) -> Path:
+    remote = parse_remote_dataset_uri(raw_path)
+    basename = re.sub(r"[^A-Za-z0-9_.-]+", "_", PurePosixPath(remote["remote_path"]).name).strip("_")
+    basename = basename or "remote_dataset"
+    digest = hashlib.sha1(remote["source"].encode("utf-8")).hexdigest()[:12]
+    return REMOTE_DATASET_CACHE_ROOT / f"{basename}-{digest}"
+
+
+def remote_dataset_manifest(dataset_path: Path) -> dict[str, Any] | None:
+    payload = read_json(dataset_path / ".remote_dataset.json", fallback=None)
+    return payload if isinstance(payload, dict) else None
+
+
+def remote_ssh_args(remote: dict[str, Any]) -> list[str]:
+    args = [
+        "ssh",
+        "-o",
+        "BatchMode=yes",
+        "-o",
+        "ConnectTimeout=20",
+        "-o",
+        "ServerAliveInterval=30",
+        "-o",
+        "ServerAliveCountMax=3",
+        "-o",
+        "StrictHostKeyChecking=no",
+        "-o",
+        "UserKnownHostsFile=/root/.ssh/known_hosts_lqcp_remote",
+        "-p",
+        str(remote["port"]),
+    ]
+    if REMOTE_DATASET_SSH_IDENTITY:
+        args.extend(["-i", REMOTE_DATASET_SSH_IDENTITY])
+    args.append(remote["target"])
+    return args
+
+
+def verify_remote_dataset(remote: dict[str, Any]) -> None:
+    required = [
+        f"{remote['remote_path']}/meta/info.json",
+        f"{remote['remote_path']}/meta/episodes.jsonl",
+        f"{remote['remote_path']}/meta/tasks.jsonl",
+        f"{remote['remote_path']}/data",
+        f"{remote['remote_path']}/videos",
+    ]
+    checks = " && ".join(f"test -e {shlex.quote(path)}" for path in required)
+    proc = subprocess.run(
+        [*remote_ssh_args(remote), checks],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        timeout=60,
+        check=False,
+    )
+    if proc.returncode != 0:
+        detail = (proc.stdout or "").strip()[-1000:]
+        raise AppError(f"Remote dataset is unavailable: {detail or remote['source']}", 502)
+
+
+def materialize_remote_dataset(raw_path: str, force: bool = False) -> Path:
+    remote = parse_remote_dataset_uri(raw_path)
+    cache_path = remote_dataset_cache_path(raw_path)
+    with REMOTE_DATASET_LOCK:
+        manifest = remote_dataset_manifest(cache_path)
+        if not force and manifest and manifest.get("source") == remote["source"]:
+            require_ready_dataset(cache_path)
+            return cache_path
+
+        verify_remote_dataset(remote)
+        REMOTE_DATASET_CACHE_ROOT.mkdir(parents=True, exist_ok=True)
+        staging_path = cache_path.with_name(cache_path.name + ".syncing")
+        if staging_path.exists():
+            shutil.rmtree(staging_path)
+        staging_path.mkdir(parents=True, exist_ok=True)
+
+        ssh_command = " ".join(shlex.quote(part) for part in remote_ssh_args(remote)[:-1])
+        rsync_command = [
+            "rsync",
+            "-aL",
+            "--delete",
+            "--delete-excluded",
+            "--partial",
+            "--protect-args",
+            "--exclude=/latents/***",
+            "--exclude=/meta/latent_sidecars/***",
+            "--exclude=/meta/latent_shapes.json",
+            "--exclude=/meta/latent_wh.json",
+            "-e",
+            ssh_command,
+            f"{remote['target']}:{remote['remote_path']}/",
+            f"{staging_path}/",
+        ]
+        try:
+            proc = subprocess.run(
+                rsync_command,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+                timeout=REMOTE_DATASET_SYNC_TIMEOUT_SECONDS,
+                check=False,
+            )
+        except subprocess.TimeoutExpired as exc:
+            raise AppError(f"Remote dataset sync timed out after {REMOTE_DATASET_SYNC_TIMEOUT_SECONDS}s", 504) from exc
+        if proc.returncode != 0:
+            detail = (proc.stdout or "").strip()[-2000:]
+            raise AppError(f"Remote dataset sync failed: {detail or 'rsync error'}", 502)
+
+        require_ready_dataset(staging_path)
+        write_json_atomic(
+            staging_path / ".remote_dataset.json",
+            {
+                "source": remote["source"],
+                "synced_at": utc_now(),
+                "ssh_identity": REMOTE_DATASET_SSH_IDENTITY,
+                "excluded": ["latents", "meta/latent_sidecars", "meta/latent_shapes.json", "meta/latent_wh.json"],
+            },
+        )
+        if cache_path.exists():
+            shutil.rmtree(cache_path)
+        os.replace(staging_path, cache_path)
+        return cache_path
+
+
 def load_server_settings() -> dict[str, Any]:
     payload = read_json(SETTINGS_PATH, fallback={})
     return payload if isinstance(payload, dict) else {}
@@ -282,7 +449,10 @@ def current_dataset_raw_path() -> str:
 
 def safe_dataset_path(raw_path: str | None) -> Path:
     raw_path = raw_path or current_dataset_raw_path()
-    dataset_path = Path(raw_path).expanduser().resolve()
+    if is_remote_dataset_uri(raw_path):
+        dataset_path = remote_dataset_cache_path(str(raw_path))
+    else:
+        dataset_path = Path(raw_path).expanduser().resolve()
     allowed = str(ALLOWED_DATASET_ROOT)
     if str(dataset_path) != allowed and not str(dataset_path).startswith(allowed + os.sep):
         raise AppError("Dataset path must be under /mnt", 403)
@@ -300,6 +470,8 @@ def current_dataset_payload(dataset_path: Path, dataset: dict[str, Any] | None =
     episodes = (dataset or {}).get("episodes") or []
     return {
         "dataset_path": str(dataset_path),
+        "dataset_source": settings.get("dataset_source") or str(dataset_path),
+        "remote_dataset": remote_dataset_manifest(dataset_path),
         "dataset_id": dataset_id(dataset_path),
         "default_dataset": SERVER_CONFIG.get("default_dataset") or DEFAULT_DATASET,
         "settings_path": str(SETTINGS_PATH),
@@ -324,15 +496,21 @@ def require_ready_dataset(dataset_path: Path) -> None:
         raise AppError(f"Dataset is not ready; missing: {', '.join(missing)}", 400)
 
 
-def save_current_dataset(raw_path: str | None, user: str) -> dict[str, Any]:
+def save_current_dataset(raw_path: str | None, user: str, refresh_remote: bool = False) -> dict[str, Any]:
     raw_path = str(raw_path or "").strip()
     if not raw_path:
         raise AppError("dataset_path is required", 400)
-    dataset_path = safe_dataset_path(raw_path)
+    dataset_path = (
+        materialize_remote_dataset(raw_path, force=refresh_remote)
+        if is_remote_dataset_uri(raw_path)
+        else safe_dataset_path(raw_path)
+    )
     require_ready_dataset(dataset_path)
     dataset = load_dataset(dataset_path, refresh=True)
     payload = {
         **current_dataset_payload(dataset_path, dataset),
+        "dataset_source": raw_path,
+        "remote_dataset": remote_dataset_manifest(dataset_path),
         "updated_at": utc_now(),
         "updated_by": user,
     }
@@ -3446,7 +3624,11 @@ class QCRequestHandler(BaseHTTPRequestHandler):
                 return
             if method == "POST":
                 payload = self.read_body_json()
-                settings = save_current_dataset(payload.get("dataset_path"), user)
+                settings = save_current_dataset(
+                    payload.get("dataset_path"),
+                    user,
+                    refresh_remote=bool(payload.get("refresh_remote")),
+                )
                 self.send_json({"ok": True, **settings})
                 return
             raise AppError("Method not allowed", 405)
@@ -3461,7 +3643,9 @@ class QCRequestHandler(BaseHTTPRequestHandler):
                 {
                     "ok": True,
                     "dataset_path": str(dataset_path),
+                    "dataset_source": load_server_settings().get("dataset_source") or str(dataset_path),
                     "dataset_id": dataset_id(dataset_path),
+                    "remote_dataset": remote_dataset_manifest(dataset_path),
                     "proxy_build": proxy_build_status(dataset_path),
                     "raw_episode_roots": [str(root) for root in configured_raw_episode_roots()],
                     "source_metadata": {
@@ -3923,4 +4107,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-

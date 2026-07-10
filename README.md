@@ -296,6 +296,30 @@ node --check web/app.js
 git@github.com:Spphire/LerobotQualityCheck.git
 ```
 
+## Remote Dataset Cache
+
+The admin dataset setting accepts an SSH dataset URI in addition to a local `/mnt` path:
+
+```text
+ssh://root@106.14.2.243:4110/mnt/workspace/user/project/data/example_dataset
+```
+
+On first selection the server materializes a local cache under `remote_dataset_cache/` using
+`rsync --copy-links`. This resolves remote absolute symlinks before the existing parquet and
+video-proxy pipeline reads the dataset. Offline `latents/` and `meta/latent_sidecars/` are
+excluded because they are not required by the QC UI. Later selections reuse the completed
+cache; send `{"refresh_remote": true}` with `POST /api/settings` to refresh it.
+
+Relevant environment variables:
+
+| Variable | Default | Description |
+|---|---|---|
+| `LQCP_REMOTE_DATASET_CACHE_ROOT` | `<project>/remote_dataset_cache` | Local materialized dataset cache |
+| `LQCP_REMOTE_DATASET_SSH_IDENTITY` | `/root/.ssh/id_ed25519_lqcp_4110` | SSH private key used by the server |
+| `LQCP_REMOTE_DATASET_SYNC_TIMEOUT` | `3600` | Maximum rsync time in seconds |
+
+The label database remains local to the QC server and is keyed by the materialized cache path.
+
 ## DM3 Source Metadata Lookup
 
 The collector cache can query DM3 by episode UUID before falling back to local
