@@ -2285,30 +2285,46 @@ function normalizeVector(vector) {
   return [vector[0] / length, vector[1] / length, vector[2] / length];
 }
 
-function cameraFromHeadMinusZ(trajectory) {
-  const points = trajectory.ego?.points || [];
-  const quaternions = trajectory.ego?.quaternions || [];
-  const firstPose = points
-    .map((point, index) => ({ point, quat: quaternions[index] }))
-    .find((item) => validPoint(item.point) && validQuat(item.quat));
+function cameraFromDefaultViewDirection(trajectory) {
   const fallback = {
     up: { x: 0, y: 1, z: 0 },
     eye: { x: 1.35, y: 0.85, z: 1.35 },
   };
-  if (!firstPose) {
-    return fallback;
+  const metadata = trajectory.metadata || {};
+  const deviceType = String(trajectory.device_type || metadata.device_type || "").trim().toLowerCase();
+  const normalizedDeviceType = deviceType.replace(/[^a-z0-9]+/g, "");
+  let viewDirection = null;
+
+  if (normalizedDeviceType === "inferencer1") {
+    // inference_r1 uses a fixed world-space ray and does not depend on the head pose.
+    viewDirection = normalizeVector([1, -1, 0]);
+  } else {
+    const points = trajectory.ego?.points || [];
+    const quaternions = trajectory.ego?.quaternions || [];
+    const firstPose = points
+      .map((point, index) => ({ point, quat: quaternions[index] }))
+      .find((item) => validPoint(item.point) && validQuat(item.quat));
+    if (!firstPose) {
+      return fallback;
+    }
+    const collectionMode = String(metadata.collection_mode || "").toLowerCase();
+    const isTeleop = metadata.transform === "teleop_rx_minus_90"
+      || deviceType.includes("teleoperation")
+      || collectionMode.includes("teleoperation");
+    const headLocalAxis = isTeleop ? [0, 0, 1] : [0, 0, -1];
+    viewDirection = normalizeVector(rotateVectorByQuat(headLocalAxis, firstPose.quat));
   }
-  const headMinusZ = normalizeVector(rotateVectorByQuat([0, 0, -1], firstPose.quat));
-  if (!headMinusZ) {
+
+  if (!viewDirection) {
     return fallback;
   }
   const distance = 1.75;
   return {
     up: { x: 0, y: 1, z: 0 },
     eye: {
-      x: -headMinusZ[0] * distance,
-      y: -headMinusZ[1] * distance,
-      z: -headMinusZ[2] * distance,
+      x: -viewDirection[0] * distance,
+      y: -viewDirection[1] * distance,
+      z: -viewDirection[2] * distance,
     },
   };
 }
@@ -2478,7 +2494,7 @@ function renderTrajectory3DPlotlyLegacy(trajectory) {
   state.trajectoryHighlightTraceIndexes = Array.from({ length: 12 }, (_, index) => highlightStart + index);
   state.lastTrajectoryHighlightFrame = null;
   state.lastTrajectoryHighlightAt = 0;
-  state.trajectoryCamera = cloneTrajectoryCamera(cameraFromHeadMinusZ(trajectory));
+  state.trajectoryCamera = cloneTrajectoryCamera(cameraFromDefaultViewDirection(trajectory));
   state.trajectoryCameraRevision = 0;
   const axisRanges = trajectoryAxisRanges(trajectory);
   const axisStyle = {
@@ -2906,7 +2922,7 @@ function createTrajectoryView(trajectory) {
     Math.max(bounds.span * 30, 10),
   );
   camera.up.set(0, 1, 0);
-  const cameraEye = cameraFromHeadMinusZ(trajectory).eye;
+  const cameraEye = cameraFromDefaultViewDirection(trajectory).eye;
   const eyeVector = new Three3D.Vector3(cameraEye.x, cameraEye.y, cameraEye.z);
   if (eyeVector.lengthSq() < 1e-8) {
     eyeVector.set(1.35, 0.85, 1.35);
