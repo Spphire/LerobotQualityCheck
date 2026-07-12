@@ -264,6 +264,16 @@ const TRAJECTORY_SERIES_CONFIG = [
     endpointScale: 0.56,
     opacity: 0.82,
   },
+  {
+    id: "cameraState",
+    cssClass: "legend-ego",
+    label: "相机/head",
+    getData: (trajectory) => trajectory.ego,
+    colors: { core: 0x38bdf8, marker: 0x38bdf8 },
+    radiusScale: 0.78,
+    endpointScale: 0.62,
+    opacity: 0.78,
+  },
 ];
 const PHONE_DEFAULT_PLAYBACK_RATE = 10;
 
@@ -2877,14 +2887,18 @@ function createTrajectoryView(trajectory) {
     flowCore: 0xffd1d8,
     marker: 0xef4444,
   }, radius, markerRadius);
+  const cameraMarker = createDynamicHand(scene, {
+    flowCore: 0xbae6fd,
+    marker: 0x38bdf8,
+  }, radius * 0.82, markerRadius * 0.78);
 
   return {
     scene,
     renderer,
     camera,
     controls,
-    hands: { left, right },
-    pulseMaterials: [...left.pulseMaterials, ...right.pulseMaterials],
+    hands: { left, right, camera: cameraMarker },
+    pulseMaterials: [...left.pulseMaterials, ...right.pulseMaterials, ...cameraMarker.pulseMaterials],
   };
 }
 
@@ -2922,6 +2936,7 @@ function updateTrajectoryHighlight(force = false) {
   const frames = state.trajectory.frames || [];
   const left = trajectorySample(state.trajectory.left?.points || [], frames, frame);
   const right = trajectorySample(state.trajectory.right?.points || [], frames, frame);
+  const camera = trajectorySample(state.trajectory.ego?.points || [], frames, frame);
   updateDynamicHand(
     trajectoryView.hands.left,
     left,
@@ -2931,6 +2946,11 @@ function updateTrajectoryHighlight(force = false) {
     trajectoryView.hands.right,
     right,
     state.trajectory.right?.quaternions?.[right.index],
+  );
+  updateDynamicHand(
+    trajectoryView.hands.camera,
+    camera,
+    state.trajectory.ego?.quaternions?.[camera.index],
   );
 }
 
