@@ -2002,8 +2002,8 @@ function drawGripperCurves() {
     drawCanvasMessage(el.rightGripperCanvas, "等待轨迹数据");
     return;
   }
-  drawCurve(el.leftGripperCanvas, trajectory.left?.gripper || [], trajectory.frames || [], "left gripper", "#22c55e", [0, 0.1], state.curveHover.left);
-  drawCurve(el.rightGripperCanvas, trajectory.right?.gripper || [], trajectory.frames || [], "right gripper", "#ef4444", [0, 0.1], state.curveHover.right);
+  drawCurve(el.leftGripperCanvas, trajectory.left?.gripper || [], trajectory.frames || [], "left gripper", "#facc15", [0, 0.1], state.curveHover.left);
+  drawCurve(el.rightGripperCanvas, trajectory.right?.gripper || [], trajectory.frames || [], "right gripper", "#c084fc", [0, 0.1], state.curveHover.right);
 }
 
 function loadScript(src) {
