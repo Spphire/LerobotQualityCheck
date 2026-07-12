@@ -222,6 +222,8 @@ let OrbitControls3D = null;
 let trajectoryView = null;
 
 const el = {};
+const TRAJECTORY_BASE_OPACITY = 0.2;
+const TRAJECTORY_ACTIVE_TRAIL_FRACTION = 0.1;
 
 const TRAJECTORY_SERIES_CONFIG = [
   {
@@ -232,7 +234,8 @@ const TRAJECTORY_SERIES_CONFIG = [
     colors: { core: 0x4ade80, marker: 0x4ade80 },
     radiusScale: 1,
     endpointScale: 0.8,
-    opacity: 0.9,
+    opacity: TRAJECTORY_BASE_OPACITY,
+    showCurrentAxes: true,
   },
   {
     id: "leftAction",
@@ -242,7 +245,7 @@ const TRAJECTORY_SERIES_CONFIG = [
     colors: { core: 0x2dd4bf, marker: 0x2dd4bf },
     radiusScale: 0.72,
     endpointScale: 0.56,
-    opacity: 0.82,
+    opacity: TRAJECTORY_BASE_OPACITY,
   },
   {
     id: "rightState",
@@ -252,7 +255,8 @@ const TRAJECTORY_SERIES_CONFIG = [
     colors: { core: 0xfb7185, marker: 0xfb7185 },
     radiusScale: 1,
     endpointScale: 0.8,
-    opacity: 0.9,
+    opacity: TRAJECTORY_BASE_OPACITY,
+    showCurrentAxes: true,
   },
   {
     id: "rightAction",
@@ -262,7 +266,7 @@ const TRAJECTORY_SERIES_CONFIG = [
     colors: { core: 0xfbbf24, marker: 0xf59e0b },
     radiusScale: 0.72,
     endpointScale: 0.56,
-    opacity: 0.82,
+    opacity: TRAJECTORY_BASE_OPACITY,
   },
   {
     id: "cameraState",
@@ -272,7 +276,8 @@ const TRAJECTORY_SERIES_CONFIG = [
     colors: { core: 0x38bdf8, marker: 0x38bdf8 },
     radiusScale: 0.78,
     endpointScale: 0.62,
-    opacity: 0.78,
+    opacity: TRAJECTORY_BASE_OPACITY,
+    showCurrentAxes: true,
   },
 ];
 const PHONE_DEFAULT_PLAYBACK_RATE = 10;
@@ -2096,7 +2101,7 @@ function trajectoryAxisRanges(trajectory) {
   return { x: ranges[0], y: ranges[1], z: ranges[2] };
 }
 
-function trajectoryTrace(name, points = [], color, width = 5, opacity = 0.78) {
+function trajectoryTrace(name, points = [], color, width = 5, opacity = TRAJECTORY_BASE_OPACITY) {
   const valid = compactPoints(points);
   return {
     type: "scatter3d",
@@ -2127,7 +2132,7 @@ function endpointTrace(name, points = [], color) {
     x: [start[0], end[0]],
     y: [start[1], end[1]],
     z: [start[2], end[2]],
-    marker: { color, size: [4, 7], opacity: 0.95 },
+    marker: { color, size: [4, 7], opacity: TRAJECTORY_BASE_OPACITY },
     hovertemplate: `${name}<br>x=%{x:.4f}<br>y=%{y:.4f}<br>z=%{z:.4f}<extra></extra>`,
   };
 }
@@ -2157,10 +2162,9 @@ function trajectoryNowTrace(name, color) {
     y: [],
     z: [],
     marker: {
-      color: "#f8fafc",
-      size: 7,
+      color,
+      size: 5,
       opacity: 1,
-      line: { color, width: 5 },
     },
     hovertemplate: `${name}<br>x=%{x:.4f}<br>y=%{y:.4f}<br>z=%{z:.4f}<extra></extra>`,
   };
@@ -2201,6 +2205,38 @@ function trajectoryIndexAtFrame(frames = [], frame = 0, fallbackLength = 0) {
   return left;
 }
 
+function trajectoryTrailStartIndex(frames = [], index = 0, fallbackLength = 0) {
+  if (index <= 0) {
+    return 0;
+  }
+  if (frames.length > 1) {
+    const firstFrame = Number(frames[0]);
+    const lastFrame = Number(frames[frames.length - 1]);
+    if (Number.isFinite(firstFrame) && Number.isFinite(lastFrame) && lastFrame > firstFrame) {
+      const indexedFrame = Number(frames[Math.min(index, frames.length - 1)]);
+      const currentFrame = Number.isFinite(indexedFrame) ? indexedFrame : firstFrame;
+      const cutoff = currentFrame - (lastFrame - firstFrame) * TRAJECTORY_ACTIVE_TRAIL_FRACTION;
+      let left = 0;
+      let right = Math.min(index, frames.length - 1);
+      while (left < right) {
+        const middle = Math.floor((left + right) / 2);
+        const middleFrame = Number(frames[middle]);
+        if ((Number.isFinite(middleFrame) ? middleFrame : middle) < cutoff) {
+          left = middle + 1;
+        } else {
+          right = middle;
+        }
+      }
+      return Math.max(0, Math.min(index - 1, left));
+    }
+  }
+  const fallbackWindow = Math.max(
+    1,
+    Math.ceil(Math.max(1, fallbackLength - 1) * TRAJECTORY_ACTIVE_TRAIL_FRACTION),
+  );
+  return Math.max(0, index - fallbackWindow);
+}
+
 function trajectorySample(points = [], frames = [], frame = 0) {
   if (!points.length) {
     return { point: null, trail: [], index: -1 };
@@ -2210,7 +2246,7 @@ function trajectorySample(points = [], frames = [], frame = 0) {
   if (index < 0) {
     return { point: null, trail: [], index: -1 };
   }
-  const start = Math.max(0, index - 28);
+  const start = trajectoryTrailStartIndex(frames, index, points.length);
   const trail = [];
   for (let i = start; i <= index; i += 1) {
     if (validPoint(points[i])) {
@@ -2675,7 +2711,34 @@ function createMeshMaterial(color, opacity = 1, additive = false) {
     transparent: opacity < 1 || additive,
     opacity,
     blending: additive ? Three3D.AdditiveBlending : Three3D.NormalBlending,
-    depthWrite: !additive,
+    depthWrite: opacity >= 1 && !additive,
+  });
+}
+
+function createTrailGradientMaterial(color) {
+  return new Three3D.ShaderMaterial({
+    uniforms: {
+      trailColor: { value: new Three3D.Color(color) },
+    },
+    vertexShader: `
+      varying float vTrailProgress;
+      void main() {
+        vTrailProgress = clamp(uv.x, 0.0, 1.0);
+        gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+      }
+    `,
+    fragmentShader: `
+      uniform vec3 trailColor;
+      varying float vTrailProgress;
+      void main() {
+        float alpha = clamp(vTrailProgress, 0.0, 1.0);
+        if (alpha <= 0.001) discard;
+        gl_FragColor = vec4(trailColor, alpha);
+      }
+    `,
+    transparent: true,
+    depthWrite: false,
+    blending: Three3D.NormalBlending,
   });
 }
 
@@ -2709,13 +2772,16 @@ function addEndpointMarkers(scene, points = [], color, radius) {
     return;
   }
   const geometry = new Three3D.SphereGeometry(radius, 16, 10);
-  const start = new Three3D.Mesh(geometry, createMeshMaterial(color, 0.58, true));
+  const start = new Three3D.Mesh(
+    geometry,
+    createMeshMaterial(color, TRAJECTORY_BASE_OPACITY, false),
+  );
   start.position.copy(pointToVector3(valid[0]));
   scene.add(start);
 
   const end = new Three3D.Mesh(
     new Three3D.SphereGeometry(radius * 1.45, 18, 12),
-    createMeshMaterial(color, 0.95, true),
+    createMeshMaterial(color, TRAJECTORY_BASE_OPACITY, false),
   );
   end.position.copy(pointToVector3(valid[valid.length - 1]));
   scene.add(end);
@@ -2779,43 +2845,32 @@ function setAxisLineSegments(line, segments) {
   replaceObjectGeometry(line, values.length ? geometry : null);
 }
 
-function createDynamicHand(scene, colors, radius, markerRadius) {
-  const coreMaterial = createMeshMaterial(colors.flowCore, 0.96, true);
-  coreMaterial.userData.baseOpacity = 0.96;
-  const flowCore = createTubeMesh([], radius * 2.1, coreMaterial);
-  const marker = new Three3D.Mesh(
-    new Three3D.SphereGeometry(markerRadius, 20, 14),
-    createMeshMaterial(colors.marker, 1, true),
-  );
-  marker.visible = false;
-  marker.frustumCulled = false;
-  const axes = [
-    createAxisLine(0xff4d4d),
-    createAxisLine(0x35d06f),
-    createAxisLine(0x38bdf8),
-  ];
-  scene.add(flowCore, marker, ...axes);
+function createDynamicTrajectory(scene, color, radius, showCurrentAxes = false) {
+  const flowCore = createTubeMesh([], radius, createTrailGradientMaterial(color));
+  const axes = showCurrentAxes
+    ? [
+        createAxisLine(0xff4d4d),
+        createAxisLine(0x35d06f),
+        createAxisLine(0x38bdf8),
+      ]
+    : [];
+  scene.add(flowCore, ...axes);
   return {
     flowCore,
-    marker,
     axes,
     radii: {
-      core: radius * 2.1,
+      core: radius,
     },
-    pulseMaterials: [coreMaterial],
   };
 }
 
-function updateDynamicHand(hand, sample, quat) {
-  replaceObjectGeometry(hand.flowCore, createTubeGeometry(sample.trail, hand.radii.core));
-  if (sample.point) {
-    hand.marker.position.copy(pointToVector3(sample.point));
-    hand.marker.visible = true;
-  } else {
-    hand.marker.visible = false;
-  }
+function updateDynamicTrajectory(dynamicTrajectory, sample, quat) {
+  replaceObjectGeometry(
+    dynamicTrajectory.flowCore,
+    createTubeGeometry(sample.trail, dynamicTrajectory.radii.core),
+  );
   const axes = currentPoseAxesSegments(sample.point, quat);
-  hand.axes.forEach((axis, index) => {
+  dynamicTrajectory.axes.forEach((axis, index) => {
     setAxisLineSegments(axis, axes[index]);
   });
 }
@@ -2848,7 +2903,8 @@ function createTrajectoryView(trajectory) {
 
   const radius = Math.max(bounds.span * 0.0025, 0.0018);
   const markerRadius = Math.max(bounds.span * 0.011, 0.0045);
-  trajectorySeries(trajectory).forEach((series) => {
+  const seriesList = trajectorySeries(trajectory);
+  seriesList.forEach((series) => {
     const points = series.data.points || [];
     addTrajectoryTube(scene, points, series, radius);
     addEndpointMarkers(scene, points, series.colors.marker, markerRadius * series.endpointScale);
@@ -2879,26 +2935,22 @@ function createTrajectoryView(trajectory) {
   controls.maxDistance = Math.max(bounds.span * 12, 1);
   controls.update();
 
-  const left = createDynamicHand(scene, {
-    flowCore: 0xbbf7d0,
-    marker: 0x22c55e,
-  }, radius, markerRadius);
-  const right = createDynamicHand(scene, {
-    flowCore: 0xffd1d8,
-    marker: 0xef4444,
-  }, radius, markerRadius);
-  const cameraMarker = createDynamicHand(scene, {
-    flowCore: 0xbae6fd,
-    marker: 0x38bdf8,
-  }, radius * 0.82, markerRadius * 0.78);
+  const dynamicSeries = Object.fromEntries(seriesList.map((series) => [
+    series.id,
+    createDynamicTrajectory(
+      scene,
+      series.colors.core,
+      radius * series.radiusScale * 1.08,
+      Boolean(series.showCurrentAxes),
+    ),
+  ]));
 
   return {
     scene,
     renderer,
     camera,
     controls,
-    hands: { left, right, camera: cameraMarker },
-    pulseMaterials: [...left.pulseMaterials, ...right.pulseMaterials, ...cameraMarker.pulseMaterials],
+    dynamicSeries,
   };
 }
 
@@ -2934,34 +2986,24 @@ function updateTrajectoryHighlight(force = false) {
   state.lastTrajectoryHighlightAt = now;
 
   const frames = state.trajectory.frames || [];
-  const left = trajectorySample(state.trajectory.left?.points || [], frames, frame);
-  const right = trajectorySample(state.trajectory.right?.points || [], frames, frame);
-  const camera = trajectorySample(state.trajectory.ego?.points || [], frames, frame);
-  updateDynamicHand(
-    trajectoryView.hands.left,
-    left,
-    state.trajectory.left?.quaternions?.[left.index],
-  );
-  updateDynamicHand(
-    trajectoryView.hands.right,
-    right,
-    state.trajectory.right?.quaternions?.[right.index],
-  );
-  updateDynamicHand(
-    trajectoryView.hands.camera,
-    camera,
-    state.trajectory.ego?.quaternions?.[camera.index],
-  );
+  trajectorySeries(state.trajectory).forEach((series) => {
+    const dynamicTrajectory = trajectoryView.dynamicSeries[series.id];
+    if (!dynamicTrajectory) {
+      return;
+    }
+    const sample = trajectorySample(series.data.points || [], frames, frame);
+    updateDynamicTrajectory(
+      dynamicTrajectory,
+      sample,
+      series.data.quaternions?.[sample.index],
+    );
+  });
 }
 
-function renderTrajectoryScene(now = performance.now()) {
+function renderTrajectoryScene() {
   if (!trajectoryView) {
     return;
   }
-  const pulse = 0.86 + Math.sin(now * 0.008) * 0.12;
-  trajectoryView.pulseMaterials.forEach((material) => {
-    material.opacity = Math.max(0.2, material.userData.baseOpacity * pulse);
-  });
   trajectoryView.controls.update();
   trajectoryView.renderer.render(trajectoryView.scene, trajectoryView.camera);
 }
