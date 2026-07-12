@@ -3729,6 +3729,8 @@ class QCRequestHandler(BaseHTTPRequestHandler):
             page = parse_int(query_value(query, "page"), 1, 1, 100000)
             page_size = parse_int(query_value(query, "page_size"), 60, 1, 200)
             filtered = filter_episodes(dataset_path, dataset, store, user, query)
+            page_count = max(1, math.ceil(len(filtered) / page_size))
+            page = min(page, page_count)
             start = (page - 1) * page_size
             end = start + page_size
             self.send_json(
@@ -3737,6 +3739,7 @@ class QCRequestHandler(BaseHTTPRequestHandler):
                     "dataset_id": dataset_id(dataset_path),
                     "user": user,
                     "page": page,
+                    "page_count": page_count,
                     "page_size": page_size,
                     "total": len(filtered),
                     "episodes": filtered[start:end],

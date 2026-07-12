@@ -222,7 +222,7 @@ let OrbitControls3D = null;
 let trajectoryView = null;
 
 const el = {};
-const TRAJECTORY_BASE_OPACITY = 0.2;
+const TRAJECTORY_BASE_OPACITY = 0.05;
 const TRAJECTORY_ACTIVE_TRAIL_FRACTION = 0.1;
 
 const TRAJECTORY_SERIES_CONFIG = [
@@ -3179,6 +3179,13 @@ function navigationAnchorIndex() {
 
 function applyEpisodeListData(data) {
   applyDatasetPath(data.dataset_path);
+  const responsePage = Math.max(1, Math.floor(Number(data.page) || 1));
+  if (responsePage !== state.page) {
+    state.page = responsePage;
+    resetNavigationAnchor();
+    window.localStorage.setItem(PAGE_STORAGE_KEY, String(state.page));
+    syncBrowserUrl();
+  }
   state.total = data.total;
   state.episodes = data.episodes || [];
   state.counts = data.counts;
