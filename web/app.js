@@ -231,7 +231,7 @@ const TRAJECTORY_SERIES_CONFIG = [
     cssClass: "legend-left-state",
     label: "左 state",
     getData: (trajectory) => trajectory.left,
-    colors: { core: 0x4ade80, marker: 0x4ade80 },
+    colors: { core: 0xfacc15, marker: 0xfacc15 },
     radiusScale: 1,
     endpointScale: 0.8,
     opacity: TRAJECTORY_BASE_OPACITY,
@@ -242,7 +242,7 @@ const TRAJECTORY_SERIES_CONFIG = [
     cssClass: "legend-left-action",
     label: "左 action",
     getData: (trajectory) => trajectory.action?.left,
-    colors: { core: 0x2dd4bf, marker: 0x2dd4bf },
+    colors: { core: 0xf59e0b, marker: 0xf59e0b },
     radiusScale: 0.72,
     endpointScale: 0.56,
     opacity: TRAJECTORY_BASE_OPACITY,
@@ -252,7 +252,7 @@ const TRAJECTORY_SERIES_CONFIG = [
     cssClass: "legend-right-state",
     label: "右 state",
     getData: (trajectory) => trajectory.right,
-    colors: { core: 0xfb7185, marker: 0xfb7185 },
+    colors: { core: 0xc084fc, marker: 0xc084fc },
     radiusScale: 1,
     endpointScale: 0.8,
     opacity: TRAJECTORY_BASE_OPACITY,
@@ -263,7 +263,7 @@ const TRAJECTORY_SERIES_CONFIG = [
     cssClass: "legend-right-action",
     label: "右 action",
     getData: (trajectory) => trajectory.action?.right,
-    colors: { core: 0xfbbf24, marker: 0xf59e0b },
+    colors: { core: 0x8b5cf6, marker: 0x8b5cf6 },
     radiusScale: 0.72,
     endpointScale: 0.56,
     opacity: TRAJECTORY_BASE_OPACITY,
@@ -2376,7 +2376,7 @@ function segmentTrace(name, segments, color) {
     x: segments.x,
     y: segments.y,
     z: segments.z,
-    line: { color, width: 4 },
+    line: { color, width: 8 },
     hoverinfo: "skip",
   };
 }
@@ -2473,21 +2473,21 @@ function renderTrajectory3DPlotlyLegacy(trajectory) {
     return;
   }
   const traces = [
-    trajectoryTrace("左手轨迹 glow", trajectory.left?.points || [], "rgba(34, 197, 94, 0.28)", 13, 0.38),
-    trajectoryTrace("左手轨迹", trajectory.left?.points || [], "#4ade80", 4, 0.9),
-    trajectoryTrace("右手轨迹 glow", trajectory.right?.points || [], "rgba(244, 63, 94, 0.28)", 13, 0.38),
-    trajectoryTrace("右手轨迹", trajectory.right?.points || [], "#fb7185", 4, 0.9),
-    endpointTrace("左手", trajectory.left?.points || [], "#4ade80"),
-    endpointTrace("右手", trajectory.right?.points || [], "#fb7185"),
+    trajectoryTrace("左手轨迹 glow", trajectory.left?.points || [], "rgba(250, 204, 21, 0.28)", 13, 0.38),
+    trajectoryTrace("左手轨迹", trajectory.left?.points || [], "#facc15", 4, 0.9),
+    trajectoryTrace("右手轨迹 glow", trajectory.right?.points || [], "rgba(192, 132, 252, 0.28)", 13, 0.38),
+    trajectoryTrace("右手轨迹", trajectory.right?.points || [], "#c084fc", 4, 0.9),
+    endpointTrace("左手", trajectory.left?.points || [], "#facc15"),
+    endpointTrace("右手", trajectory.right?.points || [], "#c084fc"),
   ].filter(Boolean);
   const highlightStart = traces.length;
   traces.push(
-    trajectoryFlowTrace("left current glow", "rgba(134, 239, 172, 0.35)", 20, 0.55),
-    trajectoryFlowTrace("left current flow", "#bbf7d0", 7, 0.98),
-    trajectoryNowTrace("left current", "#22c55e"),
-    trajectoryFlowTrace("right current glow", "rgba(251, 113, 133, 0.35)", 20, 0.55),
-    trajectoryFlowTrace("right current flow", "#fecdd3", 7, 0.98),
-    trajectoryNowTrace("right current", "#ef4444"),
+    trajectoryFlowTrace("left current glow", "rgba(250, 204, 21, 0.35)", 20, 0.55),
+    trajectoryFlowTrace("left current flow", "#fef08a", 7, 0.98),
+    trajectoryNowTrace("left current", "#f59e0b"),
+    trajectoryFlowTrace("right current glow", "rgba(192, 132, 252, 0.35)", 20, 0.55),
+    trajectoryFlowTrace("right current flow", "#e9d5ff", 7, 0.98),
+    trajectoryNowTrace("right current", "#8b5cf6"),
     ...currentPoseAxesTraces("left current"),
     ...currentPoseAxesTraces("right current"),
   );
@@ -2824,39 +2824,52 @@ function addSceneGuides(scene, bounds) {
   scene.add(new Three3D.LineSegments(geometry, material));
 }
 
-function createAxisLine(color) {
-  const line = new Three3D.LineSegments(
-    new Three3D.BufferGeometry(),
-    new Three3D.LineBasicMaterial({ color, transparent: true, opacity: 0.96 }),
+function createAxisMesh(color, radius) {
+  const mesh = new Three3D.Mesh(
+    new Three3D.CylinderGeometry(radius, radius, 1, 8, 1, false),
+    createMeshMaterial(color, 0.96, false),
   );
-  line.frustumCulled = false;
-  line.visible = false;
-  return line;
+  mesh.frustumCulled = false;
+  mesh.visible = false;
+  return mesh;
 }
 
-function setAxisLineSegments(line, segments) {
-  const values = [];
+function setAxisMeshSegment(mesh, segments) {
+  let start = null;
+  let end = null;
   for (let index = 0; index < segments.x.length; index += 3) {
     const a = [segments.x[index], segments.y[index], segments.z[index]];
     const b = [segments.x[index + 1], segments.y[index + 1], segments.z[index + 1]];
     if (validPoint(a) && validPoint(b)) {
-      values.push(...a, ...b);
+      start = pointToVector3(a);
+      end = pointToVector3(b);
+      break;
     }
   }
-  const geometry = new Three3D.BufferGeometry();
-  if (values.length) {
-    geometry.setAttribute("position", new Three3D.Float32BufferAttribute(values, 3));
+  if (!start || !end) {
+    mesh.visible = false;
+    return;
   }
-  replaceObjectGeometry(line, values.length ? geometry : null);
+  const direction = end.clone().sub(start);
+  const length = direction.length();
+  if (!Number.isFinite(length) || length < 1e-8) {
+    mesh.visible = false;
+    return;
+  }
+  mesh.position.copy(start).add(end).multiplyScalar(0.5);
+  mesh.quaternion.setFromUnitVectors(new Three3D.Vector3(0, 1, 0), direction.normalize());
+  mesh.scale.set(1, length, 1);
+  mesh.visible = true;
 }
 
 function createDynamicTrajectory(scene, color, radius, showCurrentAxes = false) {
   const flowCore = createTubeMesh([], radius, createTrailGradientMaterial(color));
+  const axisRadius = Math.max(radius * 0.5, 0.00045);
   const axes = showCurrentAxes
     ? [
-        createAxisLine(0xff4d4d),
-        createAxisLine(0x35d06f),
-        createAxisLine(0x38bdf8),
+        createAxisMesh(0xff4d4d, axisRadius),
+        createAxisMesh(0x35d06f, axisRadius),
+        createAxisMesh(0x38bdf8, axisRadius),
       ]
     : [];
   scene.add(flowCore, ...axes);
@@ -2876,7 +2889,7 @@ function updateDynamicTrajectory(dynamicTrajectory, sample, quat) {
   );
   const axes = currentPoseAxesSegments(sample.point, quat);
   dynamicTrajectory.axes.forEach((axis, index) => {
-    setAxisLineSegments(axis, axes[index]);
+    setAxisMeshSegment(axis, axes[index]);
   });
 }
 
