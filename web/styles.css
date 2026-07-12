@@ -704,10 +704,6 @@ canvas {
   background: #f59e0b;
 }
 
-.legend-ego::before {
-  background: #38bdf8;
-}
-
 .review-panel {
   display: grid;
   grid-template-columns: auto minmax(0, 1fr);

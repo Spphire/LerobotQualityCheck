@@ -268,17 +268,6 @@ const TRAJECTORY_SERIES_CONFIG = [
     endpointScale: 0.56,
     opacity: TRAJECTORY_BASE_OPACITY,
   },
-  {
-    id: "cameraState",
-    cssClass: "legend-ego",
-    label: "相机/head",
-    getData: (trajectory) => trajectory.ego,
-    colors: { core: 0x38bdf8, marker: 0x38bdf8 },
-    radiusScale: 0.78,
-    endpointScale: 0.62,
-    opacity: TRAJECTORY_BASE_OPACITY,
-    showCurrentAxes: true,
-  },
 ];
 const PHONE_DEFAULT_PLAYBACK_RATE = 10;
 
