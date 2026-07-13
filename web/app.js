@@ -246,6 +246,7 @@ const TRAJECTORY_SERIES_CONFIG = [
     radiusScale: 0.72,
     endpointScale: 0.56,
     opacity: TRAJECTORY_BASE_OPACITY,
+    showCurrentAxes: true,
   },
   {
     id: "rightState",
@@ -267,6 +268,7 @@ const TRAJECTORY_SERIES_CONFIG = [
     radiusScale: 0.72,
     endpointScale: 0.56,
     opacity: TRAJECTORY_BASE_OPACITY,
+    showCurrentAxes: true,
   },
 ];
 const PHONE_DEFAULT_PLAYBACK_RATE = 10;
@@ -2490,8 +2492,10 @@ function renderTrajectory3DPlotlyLegacy(trajectory) {
     trajectoryNowTrace("right current", "#8b5cf6"),
     ...currentPoseAxesTraces("left current"),
     ...currentPoseAxesTraces("right current"),
+    ...currentPoseAxesTraces("left action current"),
+    ...currentPoseAxesTraces("right action current"),
   );
-  state.trajectoryHighlightTraceIndexes = Array.from({ length: 12 }, (_, index) => highlightStart + index);
+  state.trajectoryHighlightTraceIndexes = Array.from({ length: 18 }, (_, index) => highlightStart + index);
   state.lastTrajectoryHighlightFrame = null;
   state.lastTrajectoryHighlightAt = 0;
   state.trajectoryCamera = cloneTrajectoryCamera(cameraFromDefaultViewDirection(trajectory));
@@ -2558,31 +2562,49 @@ function updateTrajectoryHighlightPlotlyLegacy(force = false) {
   const frames = state.trajectory.frames || [];
   const left = trajectorySample(state.trajectory.left?.points || [], frames, frame);
   const right = trajectorySample(state.trajectory.right?.points || [], frames, frame);
+  const leftAction = trajectorySample(state.trajectory.action?.left?.points || [], frames, frame);
+  const rightAction = trajectorySample(state.trajectory.action?.right?.points || [], frames, frame);
   const leftAxes = currentPoseAxesSegments(left.point, state.trajectory.left?.quaternions?.[left.index]);
   const rightAxes = currentPoseAxesSegments(right.point, state.trajectory.right?.quaternions?.[right.index]);
+  const leftActionAxes = currentPoseAxesSegments(
+    leftAction.point,
+    state.trajectory.action?.left?.quaternions?.[leftAction.index],
+  );
+  const rightActionAxes = currentPoseAxesSegments(
+    rightAction.point,
+    state.trajectory.action?.right?.quaternions?.[rightAction.index],
+  );
+  const leftTrail = {
+    x: left.trail.map((point) => point[0]),
+    y: left.trail.map((point) => point[1]),
+    z: left.trail.map((point) => point[2]),
+  };
+  const leftPoint = {
+    x: left.point ? [left.point[0]] : [],
+    y: left.point ? [left.point[1]] : [],
+    z: left.point ? [left.point[2]] : [],
+  };
+  const rightTrail = {
+    x: right.trail.map((point) => point[0]),
+    y: right.trail.map((point) => point[1]),
+    z: right.trail.map((point) => point[2]),
+  };
+  const rightPoint = {
+    x: right.point ? [right.point[0]] : [],
+    y: right.point ? [right.point[1]] : [],
+    z: right.point ? [right.point[2]] : [],
+  };
   const dynamicSegments = [
-    {
-      x: left.trail.map((point) => point[0]),
-      y: left.trail.map((point) => point[1]),
-      z: left.trail.map((point) => point[2]),
-    },
-    {
-      x: left.point ? [left.point[0]] : [],
-      y: left.point ? [left.point[1]] : [],
-      z: left.point ? [left.point[2]] : [],
-    },
-    {
-      x: right.trail.map((point) => point[0]),
-      y: right.trail.map((point) => point[1]),
-      z: right.trail.map((point) => point[2]),
-    },
-    {
-      x: right.point ? [right.point[0]] : [],
-      y: right.point ? [right.point[1]] : [],
-      z: right.point ? [right.point[2]] : [],
-    },
+    leftTrail,
+    leftTrail,
+    leftPoint,
+    rightTrail,
+    rightTrail,
+    rightPoint,
     ...leftAxes,
     ...rightAxes,
+    ...leftActionAxes,
+    ...rightActionAxes,
   ];
 
   const cameraRevision = state.trajectoryCameraRevision;
