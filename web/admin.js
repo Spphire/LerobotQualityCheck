@@ -171,7 +171,9 @@ function renderRecent(labels = []) {
 async function loadAdmin() {
   const data = await requestJson(apiUrl("/api/admin"));
   syncNavigationLinks();
-  el.datasetPath.textContent = `${data.dataset_id} · ${data.dataset_path}`;
+  const datasetSource = data.dataset_source || data.dataset_path;
+  el.datasetPath.textContent = `${data.dataset_id} · ${datasetSource}`;
+  el.datasetPath.title = data.dataset_path === datasetSource ? "" : data.dataset_path;
   el.updatedAt.textContent = `更新 ${formatTime(data.generated_at)}`;
   renderMetrics(data.counts || {});
   renderUsers(data.users || []);

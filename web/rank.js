@@ -238,7 +238,9 @@ async function loadRank() {
   const cacheText = collectorCache.total
     ? `采集人缓存 ${formatNumber(collectorCache.known)}/${formatNumber(collectorCache.total)}，队列 ${formatNumber(collectorCache.queued)}`
     : "采集人缓存待建立";
-  el.datasetPath.textContent = `${data.dataset_id} / ${data.dataset_path} / ${cacheText}`;
+  const datasetSource = data.dataset_source || data.dataset_path;
+  el.datasetPath.textContent = `${data.dataset_id} / ${datasetSource} / ${cacheText}`;
+  el.datasetPath.title = data.dataset_path === datasetSource ? "" : data.dataset_path;
   const updatedText = `更新 ${formatTime(data.generated_at)}`;
   el.markedUpdatedAt.textContent = updatedText;
   el.rejectRateUpdatedAt.textContent = updatedText;

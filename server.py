@@ -447,6 +447,33 @@ def current_dataset_raw_path() -> str:
     return str(SERVER_CONFIG.get("default_dataset") or DEFAULT_DATASET)
 
 
+def configured_dataset_path(raw_path: Any) -> Path | None:
+    value = str(raw_path or "").strip()
+    if not value:
+        return None
+    try:
+        if is_remote_dataset_uri(value):
+            return remote_dataset_cache_path(value)
+        return Path(value).expanduser().resolve()
+    except (AppError, OSError, ValueError):
+        return None
+
+
+def dataset_source_for_path(dataset_path: Path, settings: dict[str, Any] | None = None) -> str:
+    resolved_path = dataset_path.expanduser().resolve()
+    manifest = remote_dataset_manifest(resolved_path)
+    manifest_source = str((manifest or {}).get("source") or "").strip()
+    if manifest_source and configured_dataset_path(manifest_source) == resolved_path:
+        return manifest_source
+
+    settings = settings if isinstance(settings, dict) else load_server_settings()
+    settings_source = str(settings.get("dataset_source") or "").strip()
+    source_path = configured_dataset_path(settings_source)
+    if source_path == resolved_path:
+        return settings_source
+    return str(resolved_path)
+
+
 def safe_dataset_path(raw_path: str | None) -> Path:
     raw_path = raw_path or current_dataset_raw_path()
     if is_remote_dataset_uri(raw_path):
@@ -470,7 +497,7 @@ def current_dataset_payload(dataset_path: Path, dataset: dict[str, Any] | None =
     episodes = (dataset or {}).get("episodes") or []
     return {
         "dataset_path": str(dataset_path),
-        "dataset_source": settings.get("dataset_source") or str(dataset_path),
+        "dataset_source": dataset_source_for_path(dataset_path, settings),
         "remote_dataset": remote_dataset_manifest(dataset_path),
         "dataset_id": dataset_id(dataset_path),
         "default_dataset": SERVER_CONFIG.get("default_dataset") or DEFAULT_DATASET,
@@ -500,16 +527,18 @@ def save_current_dataset(raw_path: str | None, user: str, refresh_remote: bool =
     raw_path = str(raw_path or "").strip()
     if not raw_path:
         raise AppError("dataset_path is required", 400)
+    remote_dataset = is_remote_dataset_uri(raw_path)
     dataset_path = (
         materialize_remote_dataset(raw_path, force=refresh_remote)
-        if is_remote_dataset_uri(raw_path)
+        if remote_dataset
         else safe_dataset_path(raw_path)
     )
     require_ready_dataset(dataset_path)
     dataset = load_dataset(dataset_path, refresh=True)
+    dataset_source = parse_remote_dataset_uri(raw_path)["source"] if remote_dataset else str(dataset_path)
     payload = {
         **current_dataset_payload(dataset_path, dataset),
-        "dataset_source": raw_path,
+        "dataset_source": dataset_source,
         "remote_dataset": remote_dataset_manifest(dataset_path),
         "updated_at": utc_now(),
         "updated_by": user,
@@ -2817,6 +2846,7 @@ def admin_payload(dataset_path: Path, dataset: dict[str, Any], store: dict[str, 
     ]
     return {
         "dataset_path": str(dataset_path),
+        "dataset_source": dataset_source_for_path(dataset_path),
         "dataset_id": dataset_id(dataset_path),
         "generated_at": utc_now(),
         "counts": status_counts_from_label_map(dataset, store.get("labels") or {}),
@@ -2946,6 +2976,7 @@ def rank_payload(dataset_path: Path, dataset: dict[str, Any], store: dict[str, A
     )
     return {
         "dataset_path": str(dataset_path),
+        "dataset_source": dataset_source_for_path(dataset_path),
         "dataset_id": dataset_id(dataset_path),
         "generated_at": utc_now(),
         "counts": status_counts_from_label_map(dataset, global_label_map),
@@ -3649,7 +3680,7 @@ class QCRequestHandler(BaseHTTPRequestHandler):
                 {
                     "ok": True,
                     "dataset_path": str(dataset_path),
-                    "dataset_source": load_server_settings().get("dataset_source") or str(dataset_path),
+                    "dataset_source": dataset_source_for_path(dataset_path),
                     "dataset_id": dataset_id(dataset_path),
                     "remote_dataset": remote_dataset_manifest(dataset_path),
                     "proxy_build": proxy_build_status(dataset_path),
@@ -3700,6 +3731,7 @@ class QCRequestHandler(BaseHTTPRequestHandler):
             self.send_json(
                 {
                     "dataset_path": str(dataset_path),
+                    "dataset_source": dataset_source_for_path(dataset_path),
                     "dataset_id": dataset_id(dataset_path),
                     "user": user,
                     "info": dataset["info"],
@@ -3736,6 +3768,7 @@ class QCRequestHandler(BaseHTTPRequestHandler):
             self.send_json(
                 {
                     "dataset_path": str(dataset_path),
+                    "dataset_source": dataset_source_for_path(dataset_path),
                     "dataset_id": dataset_id(dataset_path),
                     "user": user,
                     "page": page,

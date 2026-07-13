@@ -164,6 +164,7 @@ const state = {
   token: tokenFromUrl || window.localStorage.getItem("lqcp.token") || "",
   user: userFromUrl || storedUser || defaultUser,
   datasetPath: datasetFromUrl || DEFAULT_DATASET,
+  datasetSource: datasetFromUrl || DEFAULT_DATASET,
   page: Number.isInteger(initialPage) && initialPage > 0 ? initialPage : 1,
   initialEpisodeIndex: Number.isInteger(initialEpisodeIndex) && initialEpisodeIndex >= 0 ? initialEpisodeIndex : null,
   pageSize: 60,
@@ -374,18 +375,33 @@ function apiUrl(path, params = {}) {
   return `${path}?${paramsWithDataset(params).toString()}`;
 }
 
-function applyDatasetPath(datasetPath) {
-  const nextDatasetPath = String(datasetPath || "").trim();
+function applyDatasetContext(context, { forceInput = false } = {}) {
+  const payload = typeof context === "string" ? { dataset_path: context } : (context || {});
+  const nextDatasetPath = String(payload.dataset_path || "").trim();
   if (!nextDatasetPath) {
     return;
   }
+  const nextDatasetSource = String(payload.dataset_source || nextDatasetPath).trim() || nextDatasetPath;
   state.datasetPath = nextDatasetPath;
+  state.datasetSource = nextDatasetSource;
   if (el.datasetSubtitle) {
-    el.datasetSubtitle.textContent = state.datasetPath;
+    el.datasetSubtitle.textContent = state.datasetSource;
+    el.datasetSubtitle.title = state.datasetPath === state.datasetSource ? "" : state.datasetPath;
   }
-  if (el.datasetInput && el.datasetInput.value !== state.datasetPath) {
-    el.datasetInput.value = state.datasetPath;
+  if (el.datasetInput) {
+    el.datasetInput.title = state.datasetPath === state.datasetSource ? "" : state.datasetPath;
+    if (forceInput || document.activeElement !== el.datasetInput) {
+      if (el.datasetInput.value !== state.datasetSource) {
+        el.datasetInput.value = state.datasetSource;
+      }
+    }
   }
+}
+
+async function loadDatasetSettings({ forceInput = false } = {}) {
+  const settings = await requestJson(apiUrl("/api/settings"));
+  applyDatasetContext(settings, { forceInput });
+  return settings;
 }
 
 function syncBrowserUrl() {
@@ -3218,7 +3234,7 @@ function navigationAnchorIndex() {
 }
 
 function applyEpisodeListData(data) {
-  applyDatasetPath(data.dataset_path);
+  applyDatasetContext(data);
   const responsePage = Math.max(1, Math.floor(Number(data.page) || 1));
   if (responsePage !== state.page) {
     state.page = responsePage;
@@ -3256,7 +3272,7 @@ async function loadEpisodes({ refresh = false, keepSelection = true, preferLast 
     state.current = null;
     resetNavigationAnchor();
   }
-  applyDatasetPath(state.datasetPath);
+  applyDatasetContext({ dataset_path: state.datasetPath, dataset_source: state.datasetSource });
   window.localStorage.setItem(USER_STORAGE_KEY, state.user);
   window.localStorage.setItem(PAGE_STORAGE_KEY, String(state.page));
   syncBrowserUrl();
@@ -3901,7 +3917,7 @@ function bindPhoneControls() {
 
 function bindEvents() {
   if (el.datasetInput) {
-    el.datasetInput.value = state.datasetPath;
+    el.datasetInput.value = state.datasetSource;
   }
   if (el.userInput) {
     el.userInput.value = state.user;
@@ -3954,7 +3970,7 @@ function bindEvents() {
       method: "POST",
       body: JSON.stringify({ dataset_path: nextDatasetPath }),
     });
-    applyDatasetPath(settings.dataset_path);
+    applyDatasetContext(settings, { forceInput: true });
     state.page = 1;
     await loadEpisodes({ refresh: true, keepSelection: false });
   }));
@@ -4204,6 +4220,7 @@ async function main() {
   renderTrajectoryLegends();
   renderIssueOptions();
   await loadUserSession();
+  await runWithErrors(() => loadDatasetSettings({ forceInput: true }));
   bindEvents();
   drawCanvasMessage(el.leftGripperCanvas, "等待轨迹数据");
   drawCanvasMessage(el.rightGripperCanvas, "等待轨迹数据");
