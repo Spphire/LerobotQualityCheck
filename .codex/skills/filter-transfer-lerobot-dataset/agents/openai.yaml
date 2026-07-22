@@ -1,0 +1,4 @@
+interface:
+  display_name: "Filter Transfer LeRobot"
+  short_description: "Filter QC-approved LeRobot data for training."
+  default_prompt: "Use $filter-transfer-lerobot-dataset to create an accepted-only LeRobot dataset and stage it on the training server."

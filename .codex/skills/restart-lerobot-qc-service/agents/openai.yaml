@@ -1,0 +1,4 @@
+interface:
+  display_name: "Restart Lerobot QC Service"
+  short_description: "Restart the remote Lerobot QC platform service safely."
+  default_prompt: "Use $restart-lerobot-qc-service to restart the Lerobot quality-check platform service."

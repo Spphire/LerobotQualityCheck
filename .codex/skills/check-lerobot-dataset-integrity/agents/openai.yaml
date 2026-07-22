@@ -1,0 +1,4 @@
+interface:
+  display_name: "Check LeRobot Dataset Integrity"
+  short_description: "Validate LeRobot metadata, episodes, videos, and caches"
+  default_prompt: "Use $check-lerobot-dataset-integrity to verify a LeRobot dataset completely and report every integrity issue."

@@ -1,0 +1,4 @@
+interface:
+  display_name: "查询 LeRobot 质检标注"
+  short_description: "按 episode 查询生产质检平台当前标注人、状态和事件历史。"
+  default_prompt: "使用 $query-lerobot-qc-label 查询当前生产质检平台指定 episode 的标注人、状态和事件历史。"

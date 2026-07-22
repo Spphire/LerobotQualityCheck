@@ -1,0 +1,4 @@
+interface:
+  display_name: "Develop Lerobot QC Platform"
+  short_description: "Use the server dev worktree and test port safely."
+  default_prompt: "Use $develop-lerobot-qc-platform to work on the Lerobot QC dev copy without touching production."

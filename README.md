@@ -1,143 +1,80 @@
-# LerobotQualityCheckPlatform
+# LeRobot Quality Check Platform
 
-一个面向 LeRobot v2 风格数据集的轻量人工质检平台，用来快速筛出明显错误的 episode。
+面向 LeRobot v2/v2.1 数据集的多人在线人工质检平台。标注员可以快速浏览三路视频、左右手夹爪曲线和手部 state/action 轨迹，并把每个 episode 标为 `reject`、`pending` 或 `accept`。平台把当前有效状态写入 SQLite，同时保留操作事件，便于多人并行、导出、筛选和复盘。
 
-当前默认数据集：
+> 页面截图来自 dev 服务的演示数据集。数据集路径、episode 数和排行榜内容会随当前 settings 改变。
 
-```text
-/mnt/nm_dataset/dataset/giftbox_0628_1912episodes
-```
+![普通质检界面](docs/images/qc-main.png)
+
+![管理员质检界面](docs/images/qc-admin-review.png)
+
+![排行榜界面](docs/images/qc-rank.png)
 
 ## 功能概览
 
-- 自动扫描 LeRobot 数据集的 `meta/episodes.jsonl`、`data/chunk-*` 和 `videos/chunk-*`。
-- 左侧 episode 列表支持状态筛选、模糊搜索和分页。
-- 右侧主区域展示：
-  - 左右手 3D 轨迹，可拖动视角。
-  - 左右手局部坐标轴姿态。
-  - 当前视频时间点对应的 3D 高亮点和短尾迹。
-  - 左右手夹爪曲线，固定 y 轴范围 `0-0.1`。
-  - 左腕、头部、右腕三路视频速播，同步进度，默认 `10x` 循环播放。
-- 点击夹爪曲线可打开对应时间点的腕部视频弹窗；弹窗默认暂停、`1x` 播放。
-- 多用户并行质检：
-  - episode 状态是全局结果，一个用户标完后所有用户可见。
-  - 每条标注记录保留 `user` / `annotator`。
-  - 正在查看的 episode 会显示其他用户占用锁。
-  - 列表和当前 episode 状态约每 2 秒同步一次。
-- 导出全局标注结果为 JSONL 或 CSV，可用于按 `episode_index` / `status` / `annotator` 筛选数据。
+- 多人并行标注：一个 episode 的最终状态对所有用户可见；普通质检页会显示其他用户的短时占用锁，避免重复处理。
+- 三态质检：`reject`、`pending`、`accept`。普通质检页支持左右方向键切换状态、上下方向键在当前列表中切换 episode。
+- 同步可视化：左腕、头部、右腕视频共享进度，默认 `10x` 循环播放；夹爪曲线始终使用 `0-0.1` 的 y 轴范围。
+- 3D 轨迹：渲染左右手的 state 与 action 四条轨迹，带有当前播放位置的流动高亮、局部坐标轴和可拖拽视角。头部 pose 仅用于相机初始朝向，不绘制头部轨迹。
+- 腕部细查：点击夹爪曲线可在暂停的半透明弹窗中打开对应腕部视频，并从点击时刻开始查看。
+- 管理员能力：`/admin/review` 可设置本地路径或 `ssh://` 数据集来源、忽略占用锁、按状态筛选和强制标注；`/admin` 只读汇总；`/rank` 提供标注员和采集人复盘。
+- 远程数据集：管理员可直接加载 SSH URI。服务端会把数据集 materialize 到本地缓存后再读取 Parquet 和视频，避免浏览器跨主机访问。
 
-## 快捷键
+## 页面与权限
 
-方向键是全局快捷键，不会控制下拉框、搜索框或进度条：
+| 路径 | 用途 | 关键能力 |
+|---|---|---|
+| `/` | 普通质检 | 多人锁、键盘切换、搜索跳转、视频和 3D 同步 |
+| `/admin/review` | 管理员质检 | 数据集设置、本地/SSH 来源、状态筛选、无视锁标注 |
+| `/admin` | 管理员统计 | 用户标注量、当前占用、最近标注，只读 |
+| `/rank` | 排行榜与复盘 | 标注数、拒绝率、采集人拒绝率、未标注 episode |
+| `/phone` | 移动端质检 | 触控和滑动优先的紧凑布局 |
+
+普通质检页不会让标注员切换数据集。用户名会通过 cookie 关联到服务端会话，并在一周未刷新后自动清理。管理员质检页中的数据集输入框使用服务器 settings 作为权威来源：正在编辑时不会被轮询覆盖，失焦后会与当前设置同步。
+
+## 系统结构
+
+```mermaid
+flowchart LR
+  Browser["Browser: normal / admin / rank"] --> API["Python HTTP service"]
+  API --> Settings["qc_results/settings.json"]
+  API --> Labels["qc_results/<dataset_id>/labels.db"]
+  API --> Proxy["video_proxy/<dataset_id>"]
+  API --> Dataset["Local LeRobot dataset"]
+  SSHSource["ssh:// remote dataset"] --> Cache["remote_dataset_cache/<digest>"]
+  Cache --> Dataset
+  API --> DM3["DM3 / source metadata cache"]
+```
+
+`dataset_source` 是管理员配置的本地路径或 SSH URI；`dataset_path` 是服务真正加载的本地目录或缓存目录。对于 SSH 数据集，这两个字段本来就不同。`/api/settings`、`/api/health` 和 episode 列表都会返回这对字段与一致的 `dataset_id`。
+
+## 标注工作流
+
+1. 输入用户名，平台自动保存会话身份。
+2. 在左侧搜索 episode、UUID 或任务描述，结果会直接跳转到匹配 episode。
+3. 观看同步视频、夹爪曲线和 3D 轨迹。普通页可用以下快捷键：
 
 | 按键 | 行为 |
 |---|---|
-| `←` | 状态向左切换，最多停在 `拒绝` |
-| `→` | 状态向右切换，最多停在 `接收` |
-| `↑` | 切到当前筛选列表中的上一个可用 episode |
-| `↓` | 切到当前筛选列表中的下一个可用 episode |
-| `R` | 标为拒绝 |
-| `P` | 标为待审 |
-| `A` | 标为接收 |
-| `Space` | 播放 / 暂停三路速播视频 |
+| `Left` / `Right` | 在 `reject -> pending -> accept` 中切换，不循环 |
+| `Up` / `Down` | 在当前列表中切换上一条/下一条可用 episode，跳过其他用户锁定项 |
+| `R` / `P` / `A` | 直接设置 `reject` / `pending` / `accept` |
+| `Space` | 播放或暂停三路视频 |
 | `Esc` | 关闭腕部视频弹窗 |
 
-上下切换只在当前状态筛选、搜索词和页码对应的列表中移动，并跳过其他用户锁住的 episode。
+状态写入成功后会立即广播到轮询中的客户端。普通页约每 2 秒同步一次列表和当前 episode；管理员页可以无视临时占用锁，但不使用上下方向键切换 episode。
 
-## 启动
+## 可视化约定
 
-在服务器上：
+- 左右手轨迹使用黄/紫色系，与夹爪曲线对应。
+- 3D 面板显示左右手 `state` 和 `action`，常态低透明度，当前播放点前方一小段轨迹逐渐高亮；用户拖拽或缩放的相机不会被播放刷新重置。
+- 每条当前手部轨迹只显示一个加粗局部坐标轴，避免稀疏采样坐标轴造成噪声。
+- `device_type` 会参与轨迹坐标处理。`teleoperation*` 与 `inference_r1` 使用 teleop 兼容分支；其他设备类型保留默认坐标约定。
+- 头部视频与左右腕视频按各自原始比例显示，三路同步默认 `10x` 自动循环。腕部弹窗固定 `1x` 且初始暂停。
 
-```bash
-cd /mnt/LerobotQualityCheckPlatform
-HOST=0.0.0.0 PORT=18080 ./run.sh
-```
+## 数据集要求
 
-指定数据集：
-
-```bash
-cd /mnt/LerobotQualityCheckPlatform
-DATASET_PATH=/mnt/nm_dataset/dataset/giftbox_0628_1912episodes \
-HOST=0.0.0.0 PORT=18080 ./run.sh
-```
-
-启用访问 token：
-
-```bash
-cd /mnt/LerobotQualityCheckPlatform
-LQCP_TOKEN='replace-with-a-secret' HOST=0.0.0.0 PORT=18080 ./run.sh
-```
-
-然后打开：
-
-```text
-http://<server-ip>:18080
-```
-
-可通过 URL 参数指定用户、数据集或 token：
-
-```text
-http://<server-ip>:18080/?user=chenwendi
-http://<server-ip>:18080/?dataset=/mnt/path/to/dataset
-http://<server-ip>:18080/?token=replace-with-a-secret
-```
-
-## 原始数据路径配置
-
-平台会根据 episode UUID 到原始数据目录中读取：
-
-```text
-<raw_root>/<episode_uuid>/preprocessed/metadata.json
-```
-
-这个元数据用于解析采集人 `collector`，支持拒绝动画、`/rank` 采集人拒绝率排行和采集人复盘列表。它不影响 LeRobot 数据集本身的读取路径。
-
-推荐使用 `LQCP_RAW_EPISODE_ROOTS` 配置一个或多个原始数据根目录，多个路径用英文逗号或分号分隔，服务会按顺序查找：
-
-```bash
-cd /mnt/LerobotQualityCheckPlatform
-LQCP_RAW_EPISODE_ROOTS=/mnt/nm_data/data/nedf3,/mnt/nm_data/data/midtrain \
-HOST=0.0.0.0 PORT=18080 ./run.sh
-```
-
-如果以后从 `nedf3` 切到新的原始数据根，只需要改这个环境变量并重启服务：
-
-```bash
-LQCP_RAW_EPISODE_ROOTS=/mnt/nm_data/data/nedf4,/mnt/nm_data/data/midtrain \
-HOST=0.0.0.0 PORT=18080 ./run.sh
-```
-
-兼容旧配置：
-
-```bash
-LQCP_RAW_NEDF_ROOT=/mnt/nm_data/data/nedf
-LQCP_RAW_MIDTRAIN_ROOT=/mnt/nm_data/data/midtrain
-```
-
-当 `LQCP_RAW_EPISODE_ROOTS` 已设置时，旧的 `LQCP_RAW_NEDF_ROOT` / `LQCP_RAW_MIDTRAIN_ROOT` 会被忽略。
-
-服务会把当前 raw roots 签名写入 collector 缓存。以后调整 `LQCP_RAW_EPISODE_ROOTS` 并重启后，旧路径下的 collector 缓存会自动重新拉取，不需要手动清理 `labels.db`。
-
-相关可调参数：
-
-| 环境变量 | 默认值 | 说明 |
-|---|---:|---|
-| `LQCP_RAW_EPISODE_ROOTS` | 空 | 推荐配置，逗号/分号分隔多个原始数据根路径 |
-| `LQCP_RAW_NEDF_ROOT` | `/mnt/nm_data/data/nedf` | 旧版 NEDF 根路径 |
-| `LQCP_RAW_MIDTRAIN_ROOT` | `/mnt/nm_data/data/midtrain` | 旧版 midtrain 根路径 |
-| `LQCP_RAW_METADATA_TIMEOUT` | `3` | 单个 metadata 读取超时时间，单位秒 |
-| `LQCP_COLLECTOR_CACHE_WORKERS` | `3` | 后台采集人缓存并发数 |
-| `LQCP_COLLECTOR_CACHE_NEGATIVE_TTL` | `86400` | 未命中或缺少 collector 的缓存重试间隔，单位秒 |
-
-可用健康接口确认服务当前使用的原始数据根路径：
-
-```bash
-curl -fsS http://127.0.0.1:18080/api/health
-```
-
-## 数据集格式
-
-期望的数据集结构：
+平台读取标准 LeRobot 布局：
 
 ```text
 dataset_root/
@@ -151,199 +88,131 @@ dataset_root/
   videos/
     chunk-000/
       observation.images.image/
-        episode_000000.mp4
       observation.images.wrist_image_1/
-        episode_000000.mp4
       observation.images.wrist_image_2/
-        episode_000000.mp4
 ```
 
-轨迹默认从 parquet 中读取：
+轨迹优先从 `observation.state` 与 `action` 读取，并兼容 `observation.extra.{left,right,ego}.raw_pose`、手部状态和有效性 mask。Parquet 中的 pose 约定为 `[x, y, z, qw, qx, qy, qz]`。数据集元数据中的 `device_type` 决定需要采用的显示坐标兼容分支。
 
-- `observation.state`
-- `observation.extra.left.raw_pose`
-- `observation.extra.right.raw_pose`
-- `observation.extra.ego.raw_pose`
-- `observation.extra.left.hand_state`
-- `observation.extra.right.hand_state`
+## 标注存储与导出
 
-四元数顺序按当前数据集元数据为：
+运行时状态不写回原始数据集，而是保存在项目目录：
 
 ```text
-quat_w, quat_x, quat_y, quat_z
+qc_results/
+  settings.json
+  <dataset_id>/
+    labels.db
+    labels.json
+    labels.jsonl
 ```
 
-`raw_pose` 解析为：
+- `labels.db` 是唯一的当前标注真相来源，启用 WAL 和事务写入。
+- `labels` 表为每个 `(dataset_id, episode_index)` 保存一条 canonical 状态；`label_events` 保存历史事件。
+- `labels.json` 与 `labels.jsonl` 是兼容导出，不应作为并发写入来源。
+- 通过 `/api/export.jsonl` 和 `/api/export.csv` 导出最终状态。筛选训练数据时优先按 episode UUID 匹配，而不是假定 regenerated dataset 的 `episode_index` 不变。
 
-```text
-[x, y, z, qw, qx, qy, qz]
-```
+## 启动与健康检查
 
-当前数据的绝对坐标中，`Y` 轴表示重力上下方向。
-
-## 标注结果
-
-标注结果保存在平台目录下，不会写回原数据集：
-
-```text
-/mnt/LerobotQualityCheckPlatform/qc_results/<dataset_id>/labels.json
-/mnt/LerobotQualityCheckPlatform/qc_results/<dataset_id>/labels.jsonl
-```
-
-当前 schema：
-
-```json
-{
-  "schema_version": 3,
-  "dataset_path": "/mnt/nm_dataset/dataset/giftbox_0628_1912episodes",
-  "dataset_id": "giftbox_0628_1912episodes-09034dca98e3",
-  "updated_at": "2026-06-29T10:00:00+00:00",
-  "labels": {
-    "0": {
-      "dataset_id": "giftbox_0628_1912episodes-09034dca98e3",
-      "dataset_path": "/mnt/nm_dataset/dataset/giftbox_0628_1912episodes",
-      "user": "chenwendi",
-      "annotator": "chenwendi",
-      "episode_index": 0,
-      "episode_name": "episode_000000",
-      "episode_uuid": "...",
-      "status": "accept",
-      "issues": [],
-      "note": "",
-      "updated_at": "2026-06-29T10:00:00+00:00"
-    }
-  },
-  "labels_by_user": {
-    "chenwendi": {
-      "0": {
-        "episode_index": 0,
-        "status": "accept"
-      }
-    }
-  }
-}
-```
-
-说明：
-
-- `labels` 是全局最终结果，一集只保留一条当前状态。
-- `labels_by_user` 保留用户操作记录，用于统计“我的已标”。
-- 状态取值为 `reject`、`pending`、`accept`。
-- `labels.jsonl` 和导出 JSONL 都是一行一个 episode 的全局最终结果，适合脚本筛选。
-
-## 导出
-
-页面左侧提供：
-
-- `导出 JSONL`
-- `导出 CSV`
-
-也可以直接访问接口：
-
-```text
-/api/export.jsonl
-/api/export.csv
-```
-
-CSV / JSONL 中包含：
-
-```text
-dataset_id, dataset_path, user, annotator, episode_index, episode_name,
-episode_uuid, status, issues, note, updated_at, length,
-task_description, task_annotation
-```
-
-## 清空重标
-
-清空前建议备份：
+生产服务目录为 `/mnt/LerobotQualityCheckPlatform`，dev 工作树为 `/mnt/LerobotQualityCheckPlatform-dev`。生产不是 Git 工作树；所有代码开发先在 dev 的 `server-dev-18081` 分支进行。
 
 ```bash
-cd /mnt/LerobotQualityCheckPlatform/qc_results/<dataset_id>
-ts=$(date +%Y%m%d_%H%M%S)
-cp -a labels.json labels.json.bak_$ts
-cp -a labels.jsonl labels.jsonl.bak_$ts
+# Production, port 18080
+cd /mnt/LerobotQualityCheckPlatform
+HOST=0.0.0.0 PORT=18080 ./run.sh
+
+# Development, port 18081
+cd /mnt/LerobotQualityCheckPlatform-dev
+HOST=0.0.0.0 PORT=18081 ./run.sh
 ```
 
-然后写入空标注文件或删除 `labels.json` / `labels.jsonl` 后重启服务。
+`run.sh` 的 `DATASET_PATH` 只是服务首次启动时的 fallback。已存在的 `qc_results/settings.json` 会优先决定实际数据集。检查当前运行状态：
 
-## 开发说明
-
-项目没有前端构建步骤，直接由 Python 标准库 HTTP server 提供静态文件和 API。
-
-主要文件：
-
-```text
-server.py              后端 API、媒体服务、标注存储
-run.sh                 Linux 启动脚本
-web/index.html         页面结构
-web/styles.css         样式
-web/app.js             前端交互和可视化
-web/vendor/plotly.min.js
+```bash
+curl -fsS http://127.0.0.1:18080/api/settings?user=admin
+curl -fsS http://127.0.0.1:18080/api/health?user=admin
 ```
 
-本地语法检查：
+启用 token 时可传入 `LQCP_TOKEN`，例如：
+
+```bash
+LQCP_TOKEN='replace-with-a-secret' HOST=0.0.0.0 PORT=18080 ./run.sh
+```
+
+## 切换本地或 SSH 数据集
+
+管理员质检页可设置数据集。也可直接调用 settings API：
+
+```bash
+curl -fsS -X POST 'http://127.0.0.1:18080/api/settings?user=admin' \
+  -H 'Content-Type: application/json' \
+  --data '{"dataset_path":"/mnt/nm_dataset/dataset/example"}'
+```
+
+远程来源使用完整 SSH URI：
+
+```bash
+curl -fsS -X POST 'http://127.0.0.1:18080/api/settings?user=admin' \
+  -H 'Content-Type: application/json' \
+  --data '{"dataset_path":"ssh://root@106.14.2.243:4095/mnt/workspace/user/lerobot/example"}'
+```
+
+第一次选择远程来源时，服务端使用 `rsync --copy-links` 将数据 materialize 到 `remote_dataset_cache/`，并跳过 `latents/` 与 latent sidecars。远端主机必须授权 3050 服务使用 `LQCP_REMOTE_DATASET_SSH_IDENTITY`，默认是 `/root/.ssh/id_ed25519_lqcp_4110`。切换成功后无需重启服务，但已打开的浏览器页面需要刷新。
+
+## 关键环境变量
+
+| 变量 | 默认值 | 用途 |
+|---|---:|---|
+| `LQCP_REMOTE_DATASET_CACHE_ROOT` | `<project>/remote_dataset_cache` | SSH 数据集本地缓存根目录 |
+| `LQCP_REMOTE_DATASET_SSH_IDENTITY` | `/root/.ssh/id_ed25519_lqcp_4110` | 读取远程数据集的私钥 |
+| `LQCP_REMOTE_DATASET_SYNC_TIMEOUT` | `3600` | 远程 rsync 超时秒数 |
+| `LQCP_PROXY_BUILD_ON_DATASET_LOAD` | `1` | 切换后自动生成可流畅播放的视频代理 |
+| `LQCP_PROXY_BUILD_WORKERS` | CPU 相关 | 视频代理并发数 |
+| `LQCP_PROXY_ENCODER` | `auto` | `auto`、NVENC 或 CPU 编码选择 |
+| `LQCP_RAW_EPISODE_ROOTS` | 空 | 原始 episode metadata 根目录列表 |
+| `LQCP_DM3_BASE_URL` | `https://dm3.noematrix.cn` | 采集人 metadata 查询 API |
+| `LQCP_DM3_TOKEN` | 空 | 已签发的 DM3 token；不要提交到 Git |
+
+`server.py` 会加载项目根目录的 `.env.dm3`，该文件应只保存在服务器上，不应提交。
+
+## 开发验证
+
+前端不需要构建步骤。最小检查：
 
 ```bash
 python3 -m py_compile server.py
 node --check web/app.js
+node --check web/admin.js
+node --check web/rank.js
+git diff --check
 ```
 
-## Git 同步
-
-仓库地址：
+后端变更需要仅重启 dev 的 `18081` 进程并验证：
 
 ```text
-git@github.com:Spphire/LerobotQualityCheck.git
+/api/settings
+/api/health
+/api/episodes?page=1&page_size=1
+/
+/admin/review
+/admin
+/rank
 ```
 
-## Remote Dataset Cache
+生产部署前先备份 active `labels.db`，复制已提交的源码，并在用户明确要求后再重启 `18080`。不要因为 GitHub 和 dev 分支一致就假定生产目录已经更新。
 
-The admin dataset setting accepts an SSH dataset URI in addition to a local `/mnt` path:
+## 项目 Skills
 
-```text
-ssh://root@106.14.2.243:4110/mnt/workspace/user/project/data/example_dataset
-```
+可复用的项目流程固化在 [`.codex/skills`](.codex/skills)：
 
-On first selection the server materializes a local cache under `remote_dataset_cache/` using
-`rsync --copy-links`. This resolves remote absolute symlinks before the existing parquet and
-video-proxy pipeline reads the dataset. Offline `latents/` and `meta/latent_sidecars/` are
-excluded because they are not required by the QC UI. Later selections reuse the completed
-cache; send `{"refresh_remote": true}` with `POST /api/settings` to refresh it.
+| Skill | 用途 |
+|---|---|
+| `develop-lerobot-qc-platform` | 在 dev 工作树安全开发和验证 |
+| `restart-lerobot-qc-service` | 生产健康检查、备份和显式重启 |
+| `switch-lerobot-qc-dataset` | 切换本地或 SSH 数据集并验证缓存 |
+| `query-lerobot-qc-label` | 查询指定 episode 的状态、标注人和事件历史 |
+| `filter-transfer-lerobot-dataset` | 按接收标注筛选、重编号、验证并传输训练数据集 |
+| `generate-qc-assignment-table` | 生成连续且均衡的 episode 分配表 |
+| `check-lerobot-dataset-integrity` | 端到端校验 metadata、Parquet、视频和可选缓存 |
 
-Relevant environment variables:
-
-| Variable | Default | Description |
-|---|---|---|
-| `LQCP_REMOTE_DATASET_CACHE_ROOT` | `<project>/remote_dataset_cache` | Local materialized dataset cache |
-| `LQCP_REMOTE_DATASET_SSH_IDENTITY` | `/root/.ssh/id_ed25519_lqcp_4110` | SSH private key used by the server |
-| `LQCP_REMOTE_DATASET_SYNC_TIMEOUT` | `3600` | Maximum rsync time in seconds |
-
-The label database remains local to the QC server and is keyed by the materialized cache path.
-
-## DM3 Source Metadata Lookup
-
-The collector cache can query DM3 by episode UUID before falling back to local
-raw metadata files. Configure one of these authentication modes before starting
-the service:
-
-```bash
-export LQCP_DM3_PHONE_NUMBER=<phone-number>
-export LQCP_DM3_PASSWORD=<password>
-# or use an existing bearer token:
-export LQCP_DM3_TOKEN=<token>
-```
-
-Relevant options:
-
-| Env var | Default | Description |
-|---|---:|---|
-| `LQCP_DM3_BASE_URL` | `https://dm3.noematrix.cn` | DM3 API base URL |
-| `LQCP_DM3_PHONE_NUMBER` / `LQCP_DM3_PHONE` | empty | Phone number for `POST /api/v1/auth/login-by-phone` |
-| `LQCP_DM3_PASSWORD` | empty | Password for DM3 login |
-| `LQCP_DM3_TOKEN` | empty | Pre-issued bearer token; skips login when set |
-| `LQCP_DM3_TIMEOUT` | `8` | DM3 request timeout in seconds |
-| `LQCP_RAW_METADATA_FALLBACK` | auto | When DM3 is configured, fallback is off by default; set `1` to also try local raw metadata |
-
-DM3 results are stored in `collector_cache` inside `labels.db`, including
-normalized `collector`, `seat`, `seat_number`, `device`, `device_id`,
-`device_identifier`, `task`, and a compact `metadata_json` copy for debugging.
+这些 skills 与仓库一起版本化。修改后应同时通过 skill validation，并把更新后的副本同步到本机 `~/.codex/skills`，以免项目级和全局安装版本漂移。

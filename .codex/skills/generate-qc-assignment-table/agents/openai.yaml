@@ -1,0 +1,4 @@
+interface:
+  display_name: "QC Assignment Table"
+  short_description: "Output QC episode assignment tables."
+  default_prompt: "Use $generate-qc-assignment-table to output a Markdown episode assignment table for a LeRobot QC dataset."
