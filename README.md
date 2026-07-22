@@ -177,6 +177,9 @@ curl -fsS -X POST 'http://127.0.0.1:18080/api/settings?user=admin' \
 
 ## 开发验证
 
+开发 agent 在开始任务前应先阅读 [AGENT.md](AGENT.md)，其中定义了 dev/生产边界、数据集
+settings、标注数据库和部署验证契约。
+
 前端不需要构建步骤。最小检查：
 
 ```bash
