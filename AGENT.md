@@ -104,7 +104,7 @@ SSH key to another server without user authorization.
   trajectory.
 - Pose fallback uses `[x, y, z, qw, qx, qy, qz]`. Do not alter quaternion order or coordinate
   transforms based on visual intuition alone; inspect `device_type` and existing trajectory tests.
-- `teleoperation*` and `inference_r1` use the teleop compatibility transform. Preserve the
+- `teleoperation*`, `inference_r1`, and `rollout` use the teleop compatibility transform. Preserve the
   metadata-driven branch when adding device types.
 
 ## Safe Development Loop

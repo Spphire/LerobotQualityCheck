@@ -3100,7 +3100,7 @@ def trajectory_metadata_for_episode(dataset: dict[str, Any], episode: dict[str, 
     collection_mode_lower = collection_mode.lower()
     is_teleop = (
         "teleoperation" in device_type_lower
-        or device_type_lower == "inference_r1"
+        or device_type_lower in {"inference_r1", "rollout"}
         or "teleoperation" in collection_mode_lower
     )
 
