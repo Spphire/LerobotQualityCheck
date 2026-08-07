@@ -1,4 +1,4 @@
 interface:
-  display_name: "Switch LeRobot QC Dataset"
-  short_description: "Switch the QC dataset without clearing labels."
-  default_prompt: "Use $switch-lerobot-qc-dataset to load a local or SSH-backed dataset on the requested QC service."
+  display_name: "Manage LeRobot QC Datasets"
+  short_description: "Load and switch multiple QC datasets without clearing labels."
+  default_prompt: "Use $switch-lerobot-qc-dataset to load one or more local or SSH-backed datasets on the requested QC service."
