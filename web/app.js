@@ -626,6 +626,10 @@ function setSelectedIssues(issues = []) {
 function renderSummary(counts) {
   const total = counts?.total || 0;
   const marked = counts?.marked || 0;
+  const totalLabel = document.querySelector(".summary-panel .metric-label");
+  if (totalLabel) {
+    totalLabel.textContent = state.allDatasets ? "全部数据集总数" : "总数";
+  }
   if (el.totalCount) {
     el.totalCount.textContent = formatNumber(total);
   }
@@ -3449,8 +3453,10 @@ async function syncSharedState() {
       if (responseIndex !== state.currentIndex) {
         return;
       }
-      state.counts = current.counts || state.counts;
-      state.users = current.users || state.users;
+      if (!state.allDatasets) {
+        state.counts = current.counts || state.counts;
+        state.users = current.users || state.users;
+      }
       if (state.current) {
         state.current = {
           ...state.current,
@@ -3474,6 +3480,17 @@ async function syncSharedState() {
   } finally {
     state.syncInFlight = false;
   }
+}
+
+async function refreshAggregateSummary() {
+  if (!state.allDatasets) {
+    return;
+  }
+  const data = await fetchCurrentEpisodeListData();
+  state.total = data.total;
+  state.counts = data.counts;
+  state.users = data.users || state.users;
+  renderSummary(data.counts);
 }
 
 function releaseCurrentPresence() {
@@ -3534,9 +3551,11 @@ async function saveLabel(status = state.selectedStatus) {
     body: JSON.stringify(payload),
   });
   const stillCurrent = state.currentIndex === episodeIndex && requestId === state.labelRequest;
-  state.counts = result.counts;
-  state.users = result.users || state.users;
-  renderSummary(result.counts);
+  if (!state.allDatasets) {
+    state.counts = result.counts;
+    state.users = result.users || state.users;
+    renderSummary(result.counts);
+  }
   if (stillCurrent) {
     renderLabelForm(result.label);
   }
@@ -3554,6 +3573,7 @@ async function saveLabel(status = state.selectedStatus) {
     await loadEpisodes({ keepSelection: true });
   } else {
     updateEpisodeInList(episodeIndex, result.label, result.episode_label_summary, result.summary);
+    await refreshAggregateSummary();
   }
   if (shouldPlayRejectOverlay) {
     const overlayRequest = ++state.rejectOverlayRequest;
@@ -3593,9 +3613,11 @@ async function clearLabel() {
     }),
   });
   const stillCurrent = state.currentIndex === episodeIndex && requestId === state.labelRequest;
-  state.counts = result.counts;
-  state.users = result.users || state.users;
-  renderSummary(result.counts);
+  if (!state.allDatasets) {
+    state.counts = result.counts;
+    state.users = result.users || state.users;
+    renderSummary(result.counts);
+  }
   if (stillCurrent) {
     renderLabelForm(result.label);
   }
@@ -3610,6 +3632,7 @@ async function clearLabel() {
     renderHeader(state.current);
   }
   updateEpisodeInList(episodeIndex, result.label, result.episode_label_summary, result.summary);
+  await refreshAggregateSummary();
   if (stillCurrent) {
     setSaveState("已清除");
   }
