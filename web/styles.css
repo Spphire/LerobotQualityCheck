@@ -515,7 +515,8 @@ body[data-mode="admin-review"] .left-ui {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
   align-items: start;
-  gap: 14px;
+  column-gap: 14px;
+  row-gap: 4px;
 }
 
 .workspace-header h2 {
@@ -527,8 +528,11 @@ body[data-mode="admin-review"] .left-ui {
 }
 
 .workspace-header p {
+  grid-column: 1 / -1;
   margin: 0;
   color: var(--muted);
+  font-size: 12px;
+  line-height: 1.35;
   overflow-wrap: anywhere;
 }
 
