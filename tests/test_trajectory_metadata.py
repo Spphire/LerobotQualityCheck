@@ -4,6 +4,16 @@ import server
 
 
 class TrajectoryMetadataTest(unittest.TestCase):
+    def test_dataset_source_list_is_preferred_with_legacy_fallback(self):
+        self.assertEqual(
+            server.configured_dataset_sources({"dataset_paths": ["one", "two"]}),
+            ["one", "two"],
+        )
+        self.assertEqual(
+            server.configured_dataset_sources({"dataset_source": "legacy"}),
+            ["legacy"],
+        )
+
     def test_rollout_uses_teleop_transform(self):
         metadata = server.trajectory_metadata_for_episode(
             {"info": {}},

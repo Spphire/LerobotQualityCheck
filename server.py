@@ -444,7 +444,22 @@ def current_dataset_raw_path() -> str:
     dataset_path = str(settings.get("dataset_path") or "").strip()
     if dataset_path:
         return dataset_path
+    dataset_source = str(settings.get("dataset_source") or "").strip()
+    if dataset_source:
+        return dataset_source
     return str(SERVER_CONFIG.get("default_dataset") or DEFAULT_DATASET)
+
+
+def configured_dataset_sources(settings: dict[str, Any] | None = None) -> list[str]:
+    settings = settings if isinstance(settings, dict) else load_server_settings()
+    raw_paths = settings.get("dataset_paths")
+    if isinstance(raw_paths, list):
+        sources = [str(value or "").strip() for value in raw_paths]
+        sources = [value for value in sources if value]
+        if sources:
+            return sources
+    source = str(settings.get("dataset_source") or settings.get("dataset_path") or "").strip()
+    return [source] if source else []
 
 
 def configured_dataset_path(raw_path: Any) -> Path | None:
@@ -491,6 +506,51 @@ def safe_dataset_path(raw_path: str | None) -> Path:
     return dataset_path
 
 
+def canonical_dataset_source(raw_path: str) -> str:
+    value = str(raw_path or "").strip()
+    if is_remote_dataset_uri(value):
+        return parse_remote_dataset_uri(value)["source"]
+    return str(Path(value).expanduser().resolve())
+
+
+def dataset_catalog(settings: dict[str, Any] | None = None) -> list[dict[str, Any]]:
+    settings = settings if isinstance(settings, dict) else load_server_settings()
+    active_id = str(settings.get("active_dataset_id") or "").strip()
+    catalog: list[dict[str, Any]] = []
+    for raw_source in configured_dataset_sources(settings):
+        try:
+            source = canonical_dataset_source(raw_source)
+            path = configured_dataset_path(source)
+            if path is None:
+                continue
+            info = read_json(path / "meta" / "info.json", fallback={}) or {}
+            ready = all(
+                item.exists()
+                for item in (
+                    path / "meta" / "info.json",
+                    path / "meta" / "episodes.jsonl",
+                    path / "meta" / "tasks.jsonl",
+                    path / "data",
+                    path / "videos",
+                )
+            )
+            item = {
+                "dataset_id": dataset_id(path),
+                "dataset_path": str(path),
+                "dataset_source": dataset_source_for_path(path, settings),
+                "remote_dataset": remote_dataset_manifest(path),
+                "ready": ready,
+                "total_episodes": info.get("total_episodes"),
+                "total_frames": info.get("total_frames"),
+                "fps": info.get("fps"),
+            }
+            item["active"] = item["dataset_id"] == active_id
+            catalog.append(item)
+        except (AppError, OSError, ValueError, TypeError):
+            continue
+    return catalog
+
+
 def current_dataset_payload(dataset_path: Path, dataset: dict[str, Any] | None = None) -> dict[str, Any]:
     settings = load_server_settings()
     info = (dataset or {}).get("info") or {}
@@ -500,6 +560,9 @@ def current_dataset_payload(dataset_path: Path, dataset: dict[str, Any] | None =
         "dataset_source": dataset_source_for_path(dataset_path, settings),
         "remote_dataset": remote_dataset_manifest(dataset_path),
         "dataset_id": dataset_id(dataset_path),
+        "active_dataset_id": settings.get("active_dataset_id") or dataset_id(dataset_path),
+        "dataset_paths": configured_dataset_sources(settings),
+        "datasets": dataset_catalog(settings),
         "default_dataset": SERVER_CONFIG.get("default_dataset") or DEFAULT_DATASET,
         "settings_path": str(SETTINGS_PATH),
         "updated_at": settings.get("updated_at"),
@@ -523,29 +586,67 @@ def require_ready_dataset(dataset_path: Path) -> None:
         raise AppError(f"Dataset is not ready; missing: {', '.join(missing)}", 400)
 
 
-def save_current_dataset(raw_path: str | None, user: str, refresh_remote: bool = False) -> dict[str, Any]:
-    raw_path = str(raw_path or "").strip()
-    if not raw_path:
-        raise AppError("dataset_path is required", 400)
-    remote_dataset = is_remote_dataset_uri(raw_path)
-    dataset_path = (
-        materialize_remote_dataset(raw_path, force=refresh_remote)
-        if remote_dataset
-        else safe_dataset_path(raw_path)
-    )
-    require_ready_dataset(dataset_path)
-    dataset = load_dataset(dataset_path, refresh=True)
-    dataset_source = parse_remote_dataset_uri(raw_path)["source"] if remote_dataset else str(dataset_path)
-    payload = {
-        **current_dataset_payload(dataset_path, dataset),
-        "dataset_source": dataset_source,
-        "remote_dataset": remote_dataset_manifest(dataset_path),
+def save_configured_datasets(
+    raw_paths: Any,
+    user: str,
+    refresh_remote: bool = False,
+    active_dataset_source: str | None = None,
+) -> dict[str, Any]:
+    existing_settings = load_server_settings()
+    if isinstance(raw_paths, list):
+        sources = [str(value or "").strip() for value in raw_paths]
+        sources = [value for value in sources if value]
+    else:
+        value = str(raw_paths or "").strip()
+        sources = [value] if value else []
+    if not sources:
+        sources = configured_dataset_sources(existing_settings)
+    if not sources:
+        raise AppError("dataset_paths is required", 400)
+
+    loaded: list[dict[str, Any]] = []
+    for raw_path in sources:
+        source = canonical_dataset_source(raw_path)
+        remote_dataset = is_remote_dataset_uri(source)
+        dataset_path = (
+            materialize_remote_dataset(source, force=refresh_remote)
+            if remote_dataset
+            else safe_dataset_path(source)
+        )
+        require_ready_dataset(dataset_path)
+        dataset = load_dataset(dataset_path, refresh=True)
+        loaded.append({"source": source, "path": dataset_path, "dataset": dataset})
+
+    active_path: Path | None = None
+    active_source = str(active_dataset_source or "").strip()
+    if active_source:
+        active_path = configured_dataset_path(active_source)
+    if active_path is None:
+        previous_source = str(existing_settings.get("dataset_source") or "").strip()
+        previous_path = configured_dataset_path(previous_source) if previous_source else None
+        active_path = previous_path
+    active = next((item for item in loaded if item["path"] == active_path), None)
+    if active is None:
+        active = loaded[0]
+
+    settings_payload = {
+        "dataset_paths": [item["source"] for item in loaded],
+        "dataset_path": str(active["path"]),
+        "dataset_source": active["source"],
+        "active_dataset_id": dataset_id(active["path"]),
+        "default_dataset": existing_settings.get("default_dataset")
+        or SERVER_CONFIG.get("default_dataset")
+        or DEFAULT_DATASET,
         "updated_at": utc_now(),
         "updated_by": user,
     }
     with SETTINGS_LOCK:
-        write_json_atomic(SETTINGS_PATH, payload)
-    return payload
+        write_json_atomic(SETTINGS_PATH, settings_payload)
+    return current_dataset_payload(active["path"], active["dataset"])
+
+
+def save_current_dataset(raw_path: str | None, user: str, refresh_remote: bool = False) -> dict[str, Any]:
+    return save_configured_datasets(raw_path, user, refresh_remote=refresh_remote)
 
 
 def dataset_id(dataset_path: Path) -> str:
@@ -3661,10 +3762,19 @@ class QCRequestHandler(BaseHTTPRequestHandler):
                 return
             if method == "POST":
                 payload = self.read_body_json()
-                settings = save_current_dataset(
-                    payload.get("dataset_path"),
+                dataset_paths = payload.get("dataset_paths")
+                if not isinstance(dataset_paths, list):
+                    dataset_paths = payload.get("dataset_path")
+                active_dataset_source = (
+                    payload.get("active_dataset_source")
+                    or payload.get("active_dataset")
+                    or ""
+                )
+                settings = save_configured_datasets(
+                    dataset_paths,
                     user,
                     refresh_remote=bool(payload.get("refresh_remote")),
+                    active_dataset_source=active_dataset_source,
                 )
                 self.send_json({"ok": True, **settings})
                 return

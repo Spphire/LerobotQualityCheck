@@ -174,6 +174,8 @@ const state = {
   counts: null,
   users: [],
   info: null,
+  datasets: [],
+  activeDatasetId: null,
   current: null,
   currentIndex: null,
   selectedStatus: "pending",
@@ -284,6 +286,7 @@ function initElements() {
     "userInput",
     "setUserButton",
     "datasetInput",
+    "datasetSelect",
     "loadDatasetButton",
     "refreshButton",
     "totalCount",
@@ -375,6 +378,41 @@ function apiUrl(path, params = {}) {
   return `${path}?${paramsWithDataset(params).toString()}`;
 }
 
+function datasetSourceItems(payload = {}) {
+  if (Array.isArray(payload.datasets) && payload.datasets.length) {
+    return payload.datasets;
+  }
+  const source = String(payload.dataset_source || payload.dataset_path || "").trim();
+  return source ? [{
+    dataset_id: payload.dataset_id || "",
+    dataset_path: payload.dataset_path || source,
+    dataset_source: source,
+    active: true,
+    ready: true,
+  }] : [];
+}
+
+function renderDatasetSelector() {
+  if (!el.datasetSelect) {
+    return;
+  }
+  const items = state.datasets || [];
+  el.datasetSelect.replaceChildren();
+  items.forEach((item) => {
+    const option = document.createElement("option");
+    const source = String(item.dataset_source || item.dataset_path || "").trim();
+    option.value = source;
+    option.textContent = `${item.dataset_id || "dataset"} · ${source}`;
+    option.title = source;
+    option.disabled = item.ready === false;
+    option.selected = Boolean(item.active) || source === state.datasetSource;
+    el.datasetSelect.appendChild(option);
+  });
+  if (state.datasetSource && items.some((item) => String(item.dataset_source || item.dataset_path || "") === state.datasetSource)) {
+    el.datasetSelect.value = state.datasetSource;
+  }
+}
+
 function applyDatasetContext(context, { forceInput = false } = {}) {
   const payload = typeof context === "string" ? { dataset_path: context } : (context || {});
   const nextDatasetPath = String(payload.dataset_path || "").trim();
@@ -384,6 +422,12 @@ function applyDatasetContext(context, { forceInput = false } = {}) {
   const nextDatasetSource = String(payload.dataset_source || nextDatasetPath).trim() || nextDatasetPath;
   state.datasetPath = nextDatasetPath;
   state.datasetSource = nextDatasetSource;
+  state.datasets = datasetSourceItems(payload);
+  state.activeDatasetId = payload.active_dataset_id
+    || payload.dataset_id
+    || state.datasets.find((item) => item.active)?.dataset_id
+    || null;
+  renderDatasetSelector();
   if (el.datasetSubtitle) {
     el.datasetSubtitle.textContent = state.datasetSource;
     el.datasetSubtitle.title = state.datasetPath === state.datasetSource ? "" : state.datasetPath;
@@ -391,8 +435,12 @@ function applyDatasetContext(context, { forceInput = false } = {}) {
   if (el.datasetInput) {
     el.datasetInput.title = state.datasetPath === state.datasetSource ? "" : state.datasetPath;
     if (forceInput || document.activeElement !== el.datasetInput) {
-      if (el.datasetInput.value !== state.datasetSource) {
-        el.datasetInput.value = state.datasetSource;
+      const sources = state.datasets
+        .map((item) => String(item.dataset_source || item.dataset_path || "").trim())
+        .filter(Boolean);
+      const nextValue = sources.length ? sources.join("\n") : state.datasetSource;
+      if (el.datasetInput.value !== nextValue) {
+        el.datasetInput.value = nextValue;
       }
     }
   }
@@ -3917,7 +3965,10 @@ function bindPhoneControls() {
 
 function bindEvents() {
   if (el.datasetInput) {
-    el.datasetInput.value = state.datasetSource;
+    const sources = state.datasets
+      .map((item) => String(item.dataset_source || item.dataset_path || "").trim())
+      .filter(Boolean);
+    el.datasetInput.value = sources.length ? sources.join("\n") : state.datasetSource;
   }
   if (el.userInput) {
     el.userInput.value = state.user;
@@ -3960,19 +4011,46 @@ function bindEvents() {
   });
 
   el.loadDatasetButton?.addEventListener("click", () => runWithErrors(async () => {
-    const nextDatasetPath = el.datasetInput?.value.trim();
-    if (!nextDatasetPath) {
+    const nextDatasetPaths = (el.datasetInput?.value || "")
+      .split(/\r?\n/)
+      .map((value) => value.trim())
+      .filter(Boolean);
+    if (!nextDatasetPaths.length) {
       setSaveState("数据集路径不能为空", true);
       return;
     }
     releaseCurrentPresence();
     const settings = await requestJson(apiUrl("/api/settings"), {
       method: "POST",
-      body: JSON.stringify({ dataset_path: nextDatasetPath }),
+      body: JSON.stringify({
+        dataset_paths: nextDatasetPaths,
+        active_dataset_source: el.datasetSelect?.value || nextDatasetPaths[0],
+      }),
     });
     applyDatasetContext(settings, { forceInput: true });
     state.page = 1;
     await loadEpisodes({ refresh: true, keepSelection: false });
+  }));
+
+  el.datasetSelect?.addEventListener("change", () => runWithErrors(async () => {
+    const activeDatasetSource = el.datasetSelect.value.trim();
+    const datasetPaths = state.datasets
+      .map((item) => String(item.dataset_source || item.dataset_path || "").trim())
+      .filter(Boolean);
+    if (!activeDatasetSource || !datasetPaths.length) {
+      return;
+    }
+    releaseCurrentPresence();
+    const settings = await requestJson(apiUrl("/api/settings"), {
+      method: "POST",
+      body: JSON.stringify({
+        dataset_paths: datasetPaths,
+        active_dataset_source: activeDatasetSource,
+      }),
+    });
+    applyDatasetContext(settings, { forceInput: true });
+    state.page = 1;
+    await loadEpisodes({ keepSelection: false });
   }));
 
   el.refreshButton?.addEventListener("click", async () => {

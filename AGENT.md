@@ -78,6 +78,9 @@ these to agree before calling it complete:
 - `dataset_source` equals the requested path or URI.
 - `dataset_path` exists locally and contains ready metadata, Parquet, and video directories.
 - The video proxy state reaches `complete` or reports its exact pending/failed state.
+- `dataset_paths` may contain multiple local or SSH sources. Each catalog item has its own
+  `dataset_id`, cache, proxy state, and `labels.db`; `dataset_source` and `dataset_path` refer to
+  the currently active item.
 
 Remote dataset paths use this form:
 
