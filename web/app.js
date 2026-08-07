@@ -277,7 +277,7 @@ const TRAJECTORY_SERIES_CONFIG = [
     showCurrentAxes: true,
   },
 ];
-const PHONE_DEFAULT_PLAYBACK_RATE = 10;
+const PHONE_DEFAULT_PLAYBACK_RATE = 3;
 
 function $(id) {
   return document.getElementById(id);
@@ -3698,7 +3698,7 @@ function currentPlaybackRate() {
   if (Number.isFinite(configured) && configured > 0) {
     return configured;
   }
-  return state.phone ? PHONE_DEFAULT_PLAYBACK_RATE : 1;
+  return PHONE_DEFAULT_PLAYBACK_RATE;
 }
 
 function applyPlaybackRate() {
