@@ -132,6 +132,11 @@ USER_SESSION_TTL_SECONDS = 7 * 24 * 60 * 60
 USER_SESSION_COOKIE = "lqcp_client_id"
 
 DATASET_CACHE: dict[str, dict[str, Any]] = {}
+DATASET_SOURCE_CACHE: dict[str, tuple[str, str]] = {}
+LABEL_STORE_CACHE: dict[str, tuple[tuple[int, int, int, int], dict[str, Any]]] = {}
+MERGED_EPISODE_CACHE: dict[tuple[Any, ...], tuple[float, dict[str, Any]]] = {}
+AGGREGATE_USERS_CACHE: dict[tuple[str, ...], list[dict[str, Any]]] = {}
+FILTERED_EPISODE_CACHE: dict[tuple[str, tuple[Any, ...]], list[dict[str, Any]]] = {}
 TRAJECTORY_CACHE: dict[tuple[str, int, int, int], dict[str, Any]] = {}
 RAW_METADATA_CACHE: dict[str, dict[str, Any]] = {}
 COLLECTOR_CACHE_QUEUE: queue.PriorityQueue[tuple[int, int, str, str, int, str]] = queue.PriorityQueue()
@@ -140,6 +145,10 @@ COLLECTOR_PREFETCH_KEYS: set[tuple[Any, ...]] = set()
 COLLECTOR_QUEUE_SEQUENCE = 0
 EPISODE_PRESENCE: dict[str, dict[str, dict[str, float]]] = {}
 DATASET_CACHE_LOCK = threading.Lock()
+DATASET_SOURCE_CACHE_LOCK = threading.Lock()
+LABEL_STORE_CACHE_LOCK = threading.Lock()
+MERGED_EPISODE_CACHE_LOCK = threading.Lock()
+AGGREGATE_USERS_CACHE_LOCK = threading.Lock()
 RAW_METADATA_LOCK = threading.Lock()
 DM3_TOKEN_LOCK = threading.Lock()
 COLLECTOR_CACHE_LOCK = threading.Lock()
@@ -476,17 +485,25 @@ def configured_dataset_path(raw_path: Any) -> Path | None:
 
 def dataset_source_for_path(dataset_path: Path, settings: dict[str, Any] | None = None) -> str:
     resolved_path = dataset_path.expanduser().resolve()
+    settings = settings if isinstance(settings, dict) else load_server_settings()
+    settings_marker = str(settings.get("updated_at") or "")
+    source_cache_key = str(resolved_path)
+    with DATASET_SOURCE_CACHE_LOCK:
+        cached = DATASET_SOURCE_CACHE.get(source_cache_key)
+        if cached and cached[0] == settings_marker:
+            return cached[1]
     manifest = remote_dataset_manifest(resolved_path)
     manifest_source = str((manifest or {}).get("source") or "").strip()
     if manifest_source and configured_dataset_path(manifest_source) == resolved_path:
-        return manifest_source
+        source = manifest_source
+    else:
+        settings_source = str(settings.get("dataset_source") or "").strip()
+        source_path = configured_dataset_path(settings_source)
+        source = settings_source if source_path == resolved_path else str(resolved_path)
 
-    settings = settings if isinstance(settings, dict) else load_server_settings()
-    settings_source = str(settings.get("dataset_source") or "").strip()
-    source_path = configured_dataset_path(settings_source)
-    if source_path == resolved_path:
-        return settings_source
-    return str(resolved_path)
+    with DATASET_SOURCE_CACHE_LOCK:
+        DATASET_SOURCE_CACHE[source_cache_key] = (settings_marker, source)
+    return source
 
 
 def safe_dataset_path(raw_path: str | None) -> Path:
@@ -1043,11 +1060,44 @@ def export_label_store(dataset_path: Path, store: dict[str, Any]) -> None:
     write_text_atomic(labels_jsonl_path(dataset_path), "\n".join(lines) + ("\n" if lines else ""))
 
 
+def label_store_fingerprint(dataset_path: Path) -> tuple[int, int, int, int]:
+    """Return a cheap change marker for the SQLite label database and WAL."""
+    db_path = labels_db_path(dataset_path)
+    wal_path = Path(str(db_path) + "-wal")
+    db_stat = db_path.stat() if db_path.exists() else None
+    wal_stat = wal_path.stat() if wal_path.exists() else None
+    return (
+        db_stat.st_mtime_ns if db_stat else 0,
+        db_stat.st_size if db_stat else 0,
+        wal_stat.st_mtime_ns if wal_stat else 0,
+        wal_stat.st_size if wal_stat else 0,
+    )
+
+
+def cache_label_store(dataset_path: Path, store: dict[str, Any]) -> None:
+    key = dataset_id(dataset_path)
+    with LABEL_STORE_CACHE_LOCK:
+        LABEL_STORE_CACHE[key] = (label_store_fingerprint(dataset_path), store)
+    # The cache is only a short-lived response optimization; clearing the dict
+    # here avoids holding its lock while a label write is still in progress.
+    MERGED_EPISODE_CACHE.clear()
+    AGGREGATE_USERS_CACHE.clear()
+    FILTERED_EPISODE_CACHE.clear()
+
+
 def load_label_store(dataset_path: Path) -> dict[str, Any]:
+    key = dataset_id(dataset_path)
+    fingerprint = label_store_fingerprint(dataset_path)
+    with LABEL_STORE_CACHE_LOCK:
+        cached = LABEL_STORE_CACHE.get(key)
+        if cached and cached[0] == fingerprint:
+            return cached[1]
     with connect_label_db(dataset_path) as conn:
         init_label_db(conn)
         import_json_labels_if_needed(dataset_path, conn)
-        return store_from_label_db(dataset_path, conn)
+        store = store_from_label_db(dataset_path, conn)
+    cache_label_store(dataset_path, store)
+    return store
 
 
 def save_label_store(dataset_path: Path, store: dict[str, Any]) -> None:
@@ -1192,6 +1242,7 @@ def write_label_db(
         store = store_from_label_db(dataset_path, conn)
 
     export_label_store(dataset_path, store)
+    cache_label_store(dataset_path, store)
     return store
 
 
@@ -2854,44 +2905,30 @@ def collector_cache_summary(
 
 
 def status_counts(dataset: dict[str, Any], store: dict[str, Any], user: str) -> dict[str, int]:
-    counts = {"total": len(dataset["episodes"]), "reject": 0, "pending": 0, "accept": 0}
-    global_marked_indices = set()
-    global_label_map = store.get("labels") or {}
-    for key, label in global_label_map.items():
-        if review_status(label.get("status")) in RECORDED_STATUS_VALUES:
-            try:
-                global_marked_indices.add(int(key))
-            except ValueError:
-                continue
-    user_marked_indices = set()
+    counts = status_counts_from_label_map(dataset, store.get("labels") or {})
     user_labels = (store.get("labels_by_user") or {}).get(user) or {}
-    if isinstance(user_labels, dict):
-        for key, label in user_labels.items():
-            if isinstance(label, dict) and review_status(label.get("status")) in RECORDED_STATUS_VALUES:
-                try:
-                    user_marked_indices.add(int(key))
-                except ValueError:
-                    continue
-
-    for episode in dataset["episodes"]:
-        episode_index = int(episode["episode_index"])
-        status = review_status(label_for_episode(store, user, episode_index).get("status"))
-        counts[status] += 1
-    counts["marked"] = len(user_marked_indices)
-    counts["all_marked"] = len(global_marked_indices)
+    counts["marked"] = sum(
+        1
+        for key, label in user_labels.items()
+        if str(key).lstrip("-").isdigit() and int(key) in dataset["episode_by_index"]
+        and isinstance(label, dict)
+        and review_status(label.get("status")) in RECORDED_STATUS_VALUES
+    ) if isinstance(user_labels, dict) else 0
     return counts
 
 
 def status_counts_from_label_map(dataset: dict[str, Any], labels: dict[str, Any]) -> dict[str, int]:
     counts = {"total": len(dataset["episodes"]), "reject": 0, "pending": 0, "accept": 0}
     marked = 0
-    for episode in dataset["episodes"]:
-        key = str(int(episode["episode_index"]))
-        label = labels.get(key)
-        status = review_status(label.get("status")) if isinstance(label, dict) else "pending"
-        counts[status] += 1
-        if isinstance(label, dict) and status in RECORDED_STATUS_VALUES:
+    valid_indices = dataset["episode_by_index"]
+    for raw_key, label in labels.items():
+        if not str(raw_key).lstrip("-").isdigit() or int(raw_key) not in valid_indices or not isinstance(label, dict):
+            continue
+        status = review_status(label.get("status"))
+        if status in RECORDED_STATUS_VALUES:
+            counts[status] += 1
             marked += 1
+    counts["pending"] = counts["total"] - counts["reject"] - counts["accept"]
     counts["marked"] = marked
     counts["all_marked"] = marked
     return counts
@@ -3582,6 +3619,7 @@ def filter_episodes(
     store: dict[str, Any],
     user: str,
     query: dict[str, list[str]],
+    include_locks: bool = True,
 ) -> list[dict[str, Any]]:
     search_text = (query_value(query, "q", "") or "").strip().lower()
     search_tokens = [token for token in re.split(r"\s+", search_text) if token]
@@ -3589,7 +3627,7 @@ def filter_episodes(
     if status_filter == "unlabeled":
         status_filter = "pending"
     result = []
-    locks = presence_snapshot(dataset_path, user)
+    locks = presence_snapshot(dataset_path, user) if include_locks else {}
     for episode in dataset["episodes"]:
         episode_index = int(episode["episode_index"])
         label = label_for_episode(store, user, episode_index)
@@ -3636,6 +3674,12 @@ def aggregate_dataset_users(
     contexts: list[tuple[str, Path, dict[str, Any], dict[str, Any]]],
     user: str,
 ) -> list[dict[str, Any]]:
+    cache_key = tuple(sorted(dataset_id(path) for _source, path, _dataset, _store in contexts))
+    with AGGREGATE_USERS_CACHE_LOCK:
+        cached = AGGREGATE_USERS_CACHE.get(cache_key)
+        if cached is not None:
+            return cached
+
     merged: dict[str, dict[str, Any]] = {}
     for _source, _path, dataset, store in contexts:
         for item in user_summaries(dataset, store):
@@ -3648,7 +3692,85 @@ def aggregate_dataset_users(
             )
             for key, value in (item.get("counts") or {}).items():
                 target["counts"][key] = int(target["counts"].get(key) or 0) + int(value or 0)
-    return sorted(merged.values(), key=lambda item: str(item.get("user") or ""))
+    result = sorted(merged.values(), key=lambda item: str(item.get("user") or ""))
+    with AGGREGATE_USERS_CACHE_LOCK:
+        AGGREGATE_USERS_CACHE[cache_key] = result
+    return result
+
+
+def merged_episodes_payload(
+    dataset_path: Path,
+    user: str,
+    query: dict[str, list[str]],
+    page: int,
+    page_size: int,
+    refresh: bool = False,
+) -> dict[str, Any]:
+    """Build the unified list once per short window to prevent request stampedes."""
+    settings = load_server_settings()
+    query_key = tuple(
+        sorted(
+            (str(key), tuple(str(value) for value in values))
+            for key, values in query.items()
+            if str(key) != "user"
+        )
+    )
+    cache_key = (str(settings.get("updated_at") or ""), user, page, page_size, query_key)
+    now = time.monotonic()
+    with MERGED_EPISODE_CACHE_LOCK:
+        cached = MERGED_EPISODE_CACHE.get(cache_key)
+        if cached and not refresh and cached[0] > now:
+            return cached[1]
+
+        contexts = configured_dataset_contexts(settings, refresh=refresh)
+        merged: list[dict[str, Any]] = []
+        for source, path, item_dataset, item_store in contexts:
+            filtered_key = (dataset_id(path), query_key)
+            rows = FILTERED_EPISODE_CACHE.get(filtered_key)
+            if rows is None or refresh:
+                rows = filter_episodes(path, item_dataset, item_store, user, query, include_locks=False)
+                if not refresh:
+                    FILTERED_EPISODE_CACHE[filtered_key] = rows
+            locks = presence_snapshot(path, user)
+            rows = [
+                {**row, "locked_by": locks.get(int(row.get("episode_index") or 0), [])}
+                for row in rows
+            ]
+            for row in rows:
+                row["dataset_id"] = dataset_id(path)
+                row["dataset_source"] = source
+                row["dataset_name"] = dataset_source_name(source, path)
+            merged.extend(rows)
+        merged.sort(key=lambda row: (str(row.get("dataset_name") or ""), int(row.get("episode_index") or 0)))
+        page_count = max(1, math.ceil(len(merged) / page_size))
+        page = min(page, page_count)
+        start = (page - 1) * page_size
+        current_info = {
+            "total_episodes": sum(len(item_dataset["episodes"]) for _source, _path, item_dataset, _store in contexts),
+            "total_frames": sum(int(item_dataset["info"].get("total_frames") or 0) for _source, _path, item_dataset, _store in contexts),
+            "fps": next((item_dataset["info"].get("fps") for _source, _path, item_dataset, _store in contexts if item_dataset["info"].get("fps") is not None), None),
+            "robot_type": "multiple" if len(contexts) > 1 else (contexts[0][2]["info"].get("robot_type") if contexts else None),
+        }
+        payload = {
+            "all_datasets": True,
+            "dataset_path": str(dataset_path),
+            "dataset_source": dataset_source_for_path(dataset_path, settings),
+            "dataset_id": "multi-dataset",
+            "active_dataset_id": settings.get("active_dataset_id"),
+            "datasets": dataset_catalog(settings),
+            "user": user,
+            "page": page,
+            "page_count": page_count,
+            "page_size": page_size,
+            "total": len(merged),
+            "episodes": merged[start : start + page_size],
+            "counts": aggregate_dataset_counts(contexts, user),
+            "users": aggregate_dataset_users(contexts, user),
+            "info": current_info,
+        }
+        if not refresh:
+            MERGED_EPISODE_CACHE[cache_key] = (time.monotonic() + 1.0, payload)
+        return payload
 
 
 def label_rows_from_store(
@@ -3958,44 +4080,7 @@ class QCRequestHandler(BaseHTTPRequestHandler):
             page = parse_int(query_value(query, "page"), 1, 1, 100000)
             page_size = parse_int(query_value(query, "page_size"), 60, 1, 200)
             if query_value(query, "all_datasets", "") == "1":
-                contexts = configured_dataset_contexts(load_server_settings(), refresh=refresh)
-                merged: list[dict[str, Any]] = []
-                for source, path, item_dataset, item_store in contexts:
-                    rows = filter_episodes(path, item_dataset, item_store, user, query)
-                    for row in rows:
-                        row["dataset_id"] = dataset_id(path)
-                        row["dataset_source"] = source
-                        row["dataset_name"] = dataset_source_name(source, path)
-                    merged.extend(rows)
-                merged.sort(key=lambda row: (str(row.get("dataset_name") or ""), int(row.get("episode_index") or 0)))
-                page_count = max(1, math.ceil(len(merged) / page_size))
-                page = min(page, page_count)
-                start = (page - 1) * page_size
-                current_info = {
-                    "total_episodes": sum(len(item_dataset["episodes"]) for _source, _path, item_dataset, _store in contexts),
-                    "total_frames": sum(int(item_dataset["info"].get("total_frames") or 0) for _source, _path, item_dataset, _store in contexts),
-                    "fps": next((item_dataset["info"].get("fps") for _source, _path, item_dataset, _store in contexts if item_dataset["info"].get("fps") is not None), None),
-                    "robot_type": "multiple" if len(contexts) > 1 else (contexts[0][2]["info"].get("robot_type") if contexts else None),
-                }
-                self.send_json(
-                    {
-                        "all_datasets": True,
-                        "dataset_path": str(dataset_path),
-                        "dataset_source": dataset_source_for_path(dataset_path),
-                        "dataset_id": "multi-dataset",
-                        "active_dataset_id": load_server_settings().get("active_dataset_id"),
-                        "datasets": dataset_catalog(load_server_settings()),
-                        "user": user,
-                        "page": page,
-                        "page_count": page_count,
-                        "page_size": page_size,
-                        "total": len(merged),
-                        "episodes": merged[start : start + page_size],
-                        "counts": aggregate_dataset_counts(contexts, user),
-                        "users": aggregate_dataset_users(contexts, user),
-                        "info": current_info,
-                    }
-                )
+                self.send_json(merged_episodes_payload(dataset_path, user, query, page, page_size, refresh=refresh))
                 return
             filtered = filter_episodes(dataset_path, dataset, store, user, query)
             page_count = max(1, math.ceil(len(filtered) / page_size))
@@ -4375,6 +4460,17 @@ def main() -> None:
         )
     except Exception as exc:
         print(f"Warning: default dataset could not be loaded: {exc}", file=sys.stderr, flush=True)
+
+    # Warm the configured multi-dataset catalog before accepting user traffic.
+    # This keeps the first burst of concurrent reviewers from stampeding through
+    # every remote-cache manifest and labels database at once.
+    try:
+        settings = load_server_settings()
+        if len(configured_dataset_sources(settings)) > 1:
+            configured_dataset_contexts(settings)
+            print("Warmed configured multi-dataset catalog", flush=True)
+    except Exception as exc:
+        print(f"Warning: multi-dataset catalog warmup failed: {exc}", file=sys.stderr, flush=True)
 
     address = (args.host, args.port)
     httpd = QCThreadingHTTPServer(address, QCRequestHandler)
