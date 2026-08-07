@@ -178,6 +178,9 @@ const state = {
   activeDatasetId: null,
   current: null,
   currentIndex: null,
+  currentDatasetId: null,
+  currentEpisodeSource: null,
+  allDatasets: false,
   selectedStatus: "pending",
   hiddenVideos: [],
   headHandOverlayCanvas: null,
@@ -376,6 +379,19 @@ function paramsWithDataset(params = {}) {
 
 function apiUrl(path, params = {}) {
   return `${path}?${paramsWithDataset(params).toString()}`;
+}
+
+function episodeApiUrl(path, params = {}) {
+  const source = state.currentEpisodeSource || state.datasetSource;
+  return apiUrl(path, { ...params, dataset: source });
+}
+
+function episodeKey(episode) {
+  return `${episode?.dataset_id || ""}:${episode?.episode_index ?? ""}`;
+}
+
+function currentEpisodeKey() {
+  return `${state.currentDatasetId || ""}:${state.currentIndex ?? ""}`;
 }
 
 function datasetSourceItems(payload = {}) {
@@ -637,7 +653,7 @@ function renderEpisodeList() {
     return;
   }
   el.episodeList.innerHTML = state.episodes.map((episode) => {
-    const active = episode.episode_index === state.currentIndex ? "active" : "";
+    const active = episodeKey(episode) === currentEpisodeKey() ? "active" : "";
     const status = statusClass(episode.status);
     const task = episode.task_description || episode.task_annotation || (episode.tasks || []).join(" / ");
     const sub = `${formatNumber(episode.length)} frames · ${episode.video_count || 0} videos`;
@@ -652,9 +668,10 @@ function renderEpisodeList() {
       : "";
     const effectiveTitle = effectiveText ? `当前标注: ${statusLabel(effectiveStatus)} / ${effectiveUser}` : "";
     return `
-      <button class="episode-item ${active}" data-index="${episode.episode_index}" type="button">
+      <button class="episode-item ${active}" data-index="${episode.episode_index}" data-dataset-source="${escapeHtml(episode.dataset_source || "")}" type="button">
         <span class="episode-main">
           <span class="episode-name">${escapeHtml(episode.episode_name)}</span>
+          ${episode.dataset_name ? `<span class="episode-dataset" title="${escapeHtml(episode.dataset_source || "")}">${escapeHtml(episode.dataset_name)}</span>` : ""}
           <span class="episode-task">${escapeHtml(task || "-")}</span>
           <span class="episode-sub">${escapeHtml(sub)}</span>
         </span>
@@ -702,11 +719,13 @@ function renderHeader(current) {
   const task = episode.task_description || episode.task_annotation || (episode.tasks || []).join(" / ");
   const bits = state.phone
     ? [
+      current.dataset_name || summary?.dataset_name,
       episode.episode_name || episodeName(episode.episode_index),
       `${formatNumber(episode.length)} frames`,
       task,
     ].filter(Boolean)
     : [
+      current.dataset_name || summary?.dataset_name,
       `index ${episode.episode_index}`,
       `${formatNumber(episode.length)} frames`,
       `${current.videos.length} videos`,
@@ -856,7 +875,7 @@ function stopHiddenVideos() {
 
 async function collectorNameForEpisode(episodeIndex) {
   try {
-    const data = await requestJson(apiUrl("/api/source_metadata", { episode_index: episodeIndex }));
+    const data = await requestJson(episodeApiUrl("/api/source_metadata", { episode_index: episodeIndex }));
     return data.source_metadata?.collector || "未知采集人";
   } catch (error) {
     console.debug("collector lookup failed", error);
@@ -3126,7 +3145,7 @@ async function loadTrajectoryForEpisode(episodeIndex) {
   el.trajectoryState.textContent = "加载中";
   drawGripperCurves();
   try {
-    const trajectory = await requestJson(apiUrl("/api/trajectory", { episode_index: episodeIndex, max_points: 900 }));
+    const trajectory = await requestJson(episodeApiUrl("/api/trajectory", { episode_index: episodeIndex, max_points: 900 }));
     if (state.trajectoryRequest !== requestId || state.currentIndex !== episodeIndex) {
       return;
     }
@@ -3163,6 +3182,8 @@ function scheduleTrajectoryForEpisode(episodeIndex) {
 function renderCurrent(current) {
   state.current = current;
   state.currentIndex = current?.episode?.episode_index ?? null;
+  state.currentDatasetId = current?.dataset_id || current?.episode?.dataset_id || state.currentDatasetId;
+  state.currentEpisodeSource = current?.dataset_source || current?.episode?.dataset_source || state.currentEpisodeSource || state.datasetSource;
   state.trajectory = null;
   clearHeadHandOverlay();
   if (state.currentIndex === null) {
@@ -3184,7 +3205,7 @@ function renderCurrent(current) {
 
 function updateEpisodeInList(episodeIndex, label, episodeLabelSummary, episodeSummary = null) {
   state.episodes = state.episodes.map((episode) => {
-    if (episode.episode_index !== episodeIndex) {
+    if (episode.episode_index !== episodeIndex || (state.currentDatasetId && episode.dataset_id !== state.currentDatasetId)) {
       return episode;
     }
     const nextEffectiveLabel = episodeSummary && Object.prototype.hasOwnProperty.call(episodeSummary, "effective_label")
@@ -3240,12 +3261,13 @@ function selectableEpisodeNear(index = 0) {
 
 function currentEpisodeVisibleInList() {
   return state.currentIndex !== null
-    && state.episodes.some((episode) => episode.episode_index === state.currentIndex);
+    && state.episodes.some((episode) => episodeKey(episode) === currentEpisodeKey());
 }
 
 function currentListKey() {
   return [
     state.datasetPath,
+    state.allDatasets ? "all-datasets" : "active-dataset",
     state.user,
     state.page,
     state.pageSize,
@@ -3261,20 +3283,21 @@ function updateNavigationAnchor(episodeIndex) {
   state.navAnchor = {
     listKey: currentListKey(),
     episodeIndex,
-    listIndex: state.episodes.findIndex((episode) => episode.episode_index === episodeIndex),
+    datasetId: state.currentDatasetId,
+    listIndex: state.episodes.findIndex((episode) => episodeKey(episode) === currentEpisodeKey()),
   };
 }
 
 function navigationAnchorIndex() {
   const key = currentListKey();
   const anchor = state.navAnchor || {};
-  if (anchor.listKey === key && anchor.episodeIndex === state.currentIndex) {
+  if (anchor.listKey === key && anchor.episodeIndex === state.currentIndex && anchor.datasetId === state.currentDatasetId) {
     const anchoredEpisode = state.episodes[anchor.listIndex];
     if (anchoredEpisode?.episode_index === anchor.episodeIndex) {
       return anchor.listIndex;
     }
   }
-  const index = state.episodes.findIndex((episode) => episode.episode_index === state.currentIndex);
+  const index = state.episodes.findIndex((episode) => episodeKey(episode) === currentEpisodeKey());
   if (index >= 0) {
     updateNavigationAnchor(state.currentIndex);
   }
@@ -3283,6 +3306,7 @@ function navigationAnchorIndex() {
 
 function applyEpisodeListData(data) {
   applyDatasetContext(data);
+  state.allDatasets = Boolean(data.all_datasets);
   const responsePage = Math.max(1, Math.floor(Number(data.page) || 1));
   if (responsePage !== state.page) {
     state.page = responsePage;
@@ -3308,11 +3332,12 @@ async function fetchCurrentEpisodeListData({ refresh = false } = {}) {
     page: state.page,
     page_size: state.pageSize,
     status: state.adminReview && state.status !== "all" ? state.status : "",
+    all_datasets: state.datasets.length > 1 ? "1" : "",
     refresh: refresh ? "1" : "",
   }));
 }
 
-async function loadEpisodes({ refresh = false, keepSelection = true, preferLast = false, selectEpisodeIndex = null } = {}) {
+async function loadEpisodes({ refresh = false, keepSelection = true, preferLast = false, selectEpisodeIndex = null, selectEpisodeSource = null, selectEpisodeDatasetId = null } = {}) {
   const requestId = state.listRequest + 1;
   state.listRequest = requestId;
   if (!keepSelection) {
@@ -3333,10 +3358,11 @@ async function loadEpisodes({ refresh = false, keepSelection = true, preferLast 
   const targetIndex = selectEpisodeIndex === null ? null : Number(selectEpisodeIndex);
   if (Number.isInteger(targetIndex)) {
     if (state.episodes.some((episode) => episode.episode_index === targetIndex)) {
-      await selectEpisode(targetIndex);
+      const target = state.episodes.find((episode) => episode.episode_index === targetIndex);
+      await selectEpisode(target.episode_index, selectEpisodeSource || target.dataset_source, selectEpisodeDatasetId || target.dataset_id);
       scrollCurrentIntoView();
     } else if (state.episodes[0]) {
-      await selectEpisode(state.episodes[0].episode_index);
+      await selectEpisode(state.episodes[0].episode_index, state.episodes[0].dataset_source, state.episodes[0].dataset_id);
     } else {
       renderCurrent(null);
     }
@@ -3346,7 +3372,7 @@ async function loadEpisodes({ refresh = false, keepSelection = true, preferLast 
   if (!keepSelection || state.currentIndex === null) {
     const next = selectableEpisode(preferLast);
     if (next) {
-      await selectEpisode(next.episode_index);
+      await selectEpisode(next.episode_index, next.dataset_source, next.dataset_id);
     } else {
       renderCurrent(null);
     }
@@ -3356,7 +3382,7 @@ async function loadEpisodes({ refresh = false, keepSelection = true, preferLast 
   if (currentEpisodeVisibleInList()) {
     renderEpisodeList();
   } else if (state.episodes[0]) {
-    await selectEpisode(state.episodes[0].episode_index);
+    await selectEpisode(state.episodes[0].episode_index, state.episodes[0].dataset_source, state.episodes[0].dataset_id);
   } else {
     renderCurrent(null);
   }
@@ -3373,23 +3399,31 @@ async function jumpToInitialEpisode() {
     q: String(targetIndex),
     page_size: state.pageSize,
     status: state.adminReview && state.status !== "all" ? state.status : "",
+    all_datasets: state.datasets.length > 1 ? "1" : "",
   }));
   if (data.match?.episode_index === targetIndex) {
     state.page = data.page || state.page;
-    await loadEpisodes({ keepSelection: false, selectEpisodeIndex: targetIndex });
+    await loadEpisodes({
+      keepSelection: false,
+      selectEpisodeIndex: targetIndex,
+      selectEpisodeSource: data.match.dataset_source,
+      selectEpisodeDatasetId: data.match.dataset_id,
+    });
   } else {
     state.page = Math.max(1, Math.floor(targetIndex / state.pageSize) + 1);
     await loadEpisodes({ keepSelection: false, selectEpisodeIndex: targetIndex });
   }
 }
 
-async function selectEpisode(episodeIndex) {
+async function selectEpisode(episodeIndex, episodeSource = null, episodeDatasetId = null) {
   const requestId = state.episodeRequest + 1;
   state.episodeRequest = requestId;
+  state.currentEpisodeSource = episodeSource || state.datasetSource;
+  state.currentDatasetId = episodeDatasetId || state.datasets.find((item) => String(item.dataset_source || "") === state.currentEpisodeSource)?.dataset_id || state.currentDatasetId;
   setSaveState("");
   updateNavigationAnchor(episodeIndex);
   const episodePath = state.adminReview ? "/api/admin/episode" : "/api/episode";
-  const current = await requestJson(apiUrl(episodePath, { episode_index: episodeIndex }));
+  const current = await requestJson(episodeApiUrl(episodePath, { episode_index: episodeIndex }));
   const responseIndex = current.episode?.episode_index ?? current.episode_index;
   if (requestId !== state.episodeRequest || responseIndex !== episodeIndex) {
     return;
@@ -3411,7 +3445,7 @@ async function syncSharedState() {
 
     if (state.currentIndex !== null) {
       const statePath = state.adminReview ? "/api/admin/episode" : "/api/episode_state";
-      const current = await requestJson(apiUrl(statePath, { episode_index: state.currentIndex }));
+      const current = await requestJson(episodeApiUrl(statePath, { episode_index: state.currentIndex }));
       const responseIndex = current.episode_index ?? current.episode?.episode_index;
       if (responseIndex !== state.currentIndex) {
         return;
@@ -3452,7 +3486,7 @@ function releaseCurrentPresence() {
   }
   const payload = JSON.stringify({ episode_index: state.currentIndex, action: "release" });
   const blob = new Blob([payload], { type: "application/json" });
-  navigator.sendBeacon?.(apiUrl("/api/presence"), blob);
+  navigator.sendBeacon?.(episodeApiUrl("/api/presence"), blob);
 }
 
 function startSyncLoop() {
@@ -3496,7 +3530,7 @@ async function saveLabel(status = state.selectedStatus) {
   renderStatusButtons();
   setSaveState("保存中");
   const labelPath = state.adminReview ? "/api/admin/label" : "/api/label";
-  const result = await requestJson(apiUrl(labelPath), {
+  const result = await requestJson(episodeApiUrl(labelPath), {
     method: "POST",
     body: JSON.stringify(payload),
   });
@@ -3550,7 +3584,7 @@ async function clearLabel() {
   state.labelRequest = requestId;
   const episodeIndex = state.currentIndex;
   setSaveState("保存中");
-  const result = await requestJson(apiUrl("/api/label"), {
+  const result = await requestJson(episodeApiUrl("/api/label"), {
     method: "POST",
     body: JSON.stringify({
       episode_index: episodeIndex,
@@ -3601,7 +3635,7 @@ async function moveEpisode(delta) {
   if (position < 0) {
     const next = selectableEpisode(delta < 0);
     if (next) {
-      await selectEpisode(next.episode_index);
+      await selectEpisode(next.episode_index, next.dataset_source, next.dataset_id);
       scrollCurrentIntoView();
     }
     return;
@@ -3610,7 +3644,7 @@ async function moveEpisode(delta) {
   while (nextPosition >= 0 && nextPosition < state.episodes.length) {
     const episode = state.episodes[nextPosition];
     if (!isEpisodeLocked(episode)) {
-      await selectEpisode(episode.episode_index);
+      await selectEpisode(episode.episode_index, episode.dataset_source, episode.dataset_id);
       scrollCurrentIntoView();
       return;
     }
@@ -3627,7 +3661,9 @@ async function moveEpisode(delta) {
 }
 
 function scrollCurrentIntoView() {
-  const item = el.episodeList?.querySelector(`.episode-item[data-index="${state.currentIndex}"]`);
+  const item = [...(el.episodeList?.querySelectorAll(".episode-item") || [])]
+    .find((button) => Number(button.dataset.index) === state.currentIndex
+      && button.dataset.datasetSource === state.currentEpisodeSource);
   item?.scrollIntoView({ block: "nearest" });
 }
 
@@ -3700,6 +3736,7 @@ async function jumpToSearchResult() {
     q: query,
     page_size: state.pageSize,
     status: state.adminReview && state.status !== "all" ? state.status : "",
+    all_datasets: state.datasets.length > 1 ? "1" : "",
   }));
   if (state.searchRequest !== requestId) {
     return;
@@ -3710,7 +3747,12 @@ async function jumpToSearchResult() {
   }
   releaseCurrentPresence();
   state.page = data.page || 1;
-  await loadEpisodes({ keepSelection: false, selectEpisodeIndex: data.match.episode_index });
+  await loadEpisodes({
+    keepSelection: false,
+    selectEpisodeIndex: data.match.episode_index,
+    selectEpisodeSource: data.match.dataset_source,
+    selectEpisodeDatasetId: data.match.dataset_id,
+  });
   setSaveState(`已定位 ${data.match.episode_name || episodeName(data.match.episode_index)}`);
 }
 
@@ -4079,7 +4121,12 @@ function bindEvents() {
     if (!button) {
       return;
     }
-    enqueueUserAction(() => selectEpisode(Number(button.dataset.index)));
+    enqueueUserAction(() => selectEpisode(
+      Number(button.dataset.index),
+      button.dataset.datasetSource,
+      state.episodes.find((episode) => Number(episode.episode_index) === Number(button.dataset.index)
+        && episode.dataset_source === button.dataset.datasetSource)?.dataset_id,
+    ));
   });
 
   el.prevPageButton?.addEventListener("click", () => {

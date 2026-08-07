@@ -7,6 +7,25 @@ description: Generate a new LeRobot dataset from QC annotation results and place
 
 Use this skill to create an accepted-only LeRobot dataset from QC labels and stage it on a training host.
 
+## Multi-Dataset Catalogs
+
+When `/api/settings` or the production settings contain multiple `dataset_paths`, annotations
+remain isolated by `dataset_id`. A unified review list may show all catalog entries together, but
+filtering must still run once per source dataset. Never match an `episode_index` from one source
+against another source's label database.
+
+For a six-dataset catalog, resolve each source to its own `dataset_id` and `labels.db`, then run
+the normal UUID-based filter workflow six times. Use distinct outputs such as:
+
+```text
+<output-root>/<source-name>_filtered
+```
+
+The final result is six independent filtered LeRobot datasets. Preserve a manifest beside the
+outputs recording `dataset_source`, `dataset_id`, output path, accepted count, and UUID match
+mode. This keeps the unified QC view convenient while preserving traceability for training and
+re-auditing.
+
 Bundled script in the QC platform repo:
 
 ```bash

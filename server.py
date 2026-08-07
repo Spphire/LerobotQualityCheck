@@ -513,6 +513,12 @@ def canonical_dataset_source(raw_path: str) -> str:
     return str(Path(value).expanduser().resolve())
 
 
+def dataset_source_name(source: str, fallback_path: Path | None = None) -> str:
+    if is_remote_dataset_uri(source):
+        return PurePosixPath(parse_remote_dataset_uri(source)["remote_path"]).name
+    return Path(source).name or (fallback_path.name if fallback_path is not None else "dataset")
+
+
 def dataset_catalog(settings: dict[str, Any] | None = None) -> list[dict[str, Any]]:
     settings = settings if isinstance(settings, dict) else load_server_settings()
     active_id = str(settings.get("active_dataset_id") or "").strip()
@@ -3102,7 +3108,11 @@ def compact_episode(
 ) -> dict[str, Any]:
     episode_index = int(episode["episode_index"])
     label_summary = per_episode_label_summary(store, episode_index)
+    source = dataset_source_for_path(dataset_path)
     return {
+        "dataset_id": dataset_id(dataset_path),
+        "dataset_source": source,
+        "dataset_name": dataset_source_name(source, dataset_path),
         "episode_index": episode_index,
         "episode_name": episode.get("episode_name", f"episode_{episode_index:06d}"),
         "episode_uuid": episode.get("episode_uuid", ""),
@@ -3142,7 +3152,11 @@ def full_episode(
     label = label_for_episode(store, user, episode_index)
     locked_by = presence_snapshot(dataset_path, user).get(episode_index, [])
     source_metadata = cached_or_queued_source_metadata(dataset_path, episode, priority=10)
+    source = dataset_source_for_path(dataset_path)
     return {
+        "dataset_id": dataset_id(dataset_path),
+        "dataset_source": source,
+        "dataset_name": dataset_source_name(source, dataset_path),
         "episode": episode,
         "summary": compact_episode(dataset_path, episode, label, store, locked_by),
         "videos": videos,
@@ -3589,6 +3603,54 @@ def filter_episodes(
     return result
 
 
+def configured_dataset_contexts(
+    settings: dict[str, Any] | None = None,
+    refresh: bool = False,
+) -> list[tuple[str, Path, dict[str, Any], dict[str, Any]]]:
+    """Load every ready catalog entry for the unified review list."""
+    contexts = []
+    for raw_source in configured_dataset_sources(settings):
+        source = canonical_dataset_source(raw_source)
+        path = configured_dataset_path(source)
+        if path is None:
+            continue
+        dataset = load_dataset(path, refresh=refresh)
+        store = load_label_store(path)
+        contexts.append((source, path, dataset, store))
+    return contexts
+
+
+def aggregate_dataset_counts(
+    contexts: list[tuple[str, Path, dict[str, Any], dict[str, Any]]],
+    user: str,
+) -> dict[str, int]:
+    counts = {"total": 0, "reject": 0, "pending": 0, "accept": 0, "marked": 0, "all_marked": 0}
+    for _source, _path, dataset, store in contexts:
+        current = status_counts(dataset, store, user)
+        for key in counts:
+            counts[key] += int(current.get(key) or 0)
+    return counts
+
+
+def aggregate_dataset_users(
+    contexts: list[tuple[str, Path, dict[str, Any], dict[str, Any]]],
+    user: str,
+) -> list[dict[str, Any]]:
+    merged: dict[str, dict[str, Any]] = {}
+    for _source, _path, dataset, store in contexts:
+        for item in user_summaries(dataset, store):
+            name = str(item.get("user") or "")
+            if not name:
+                continue
+            target = merged.setdefault(
+                name,
+                {"user": name, "counts": {"total": 0, "reject": 0, "pending": 0, "accept": 0, "marked": 0, "all_marked": 0}},
+            )
+            for key, value in (item.get("counts") or {}).items():
+                target["counts"][key] = int(target["counts"].get(key) or 0) + int(value or 0)
+    return sorted(merged.values(), key=lambda item: str(item.get("user") or ""))
+
+
 def label_rows_from_store(
     dataset_path: Path,
     dataset: dict[str, Any],
@@ -3864,12 +3926,77 @@ class QCRequestHandler(BaseHTTPRequestHandler):
             return
 
         if method == "GET" and parsed.path == "/api/episode_lookup":
+            if query_value(query, "all_datasets", "") == "1":
+                contexts = configured_dataset_contexts(load_server_settings())
+                matches = []
+                for source, path, item_dataset, item_store in contexts:
+                    matches.extend(
+                        {
+                            **row,
+                            "dataset_id": dataset_id(path),
+                            "dataset_source": source,
+                            "dataset_name": dataset_source_name(source, path),
+                        }
+                        for row in filter_episodes(path, item_dataset, item_store, user, query)
+                    )
+                matches.sort(key=lambda row: (str(row.get("dataset_name") or ""), int(row.get("episode_index") or 0)))
+                match = matches[0] if matches else None
+                return_payload = {
+                    "query": query_value(query, "q", "") or "",
+                    "match": match,
+                    "page": ((0 // parse_int(query_value(query, "page_size"), 60, 1, 200)) + 1) if match else None,
+                    "page_size": parse_int(query_value(query, "page_size"), 60, 1, 200),
+                    "position": 1 if match else None,
+                    "total": len(matches),
+                }
+                self.send_json(return_payload)
+                return
             self.send_json(episode_lookup_payload(dataset_path, dataset, store, user, query))
             return
 
         if method == "GET" and parsed.path == "/api/episodes":
             page = parse_int(query_value(query, "page"), 1, 1, 100000)
             page_size = parse_int(query_value(query, "page_size"), 60, 1, 200)
+            if query_value(query, "all_datasets", "") == "1":
+                contexts = configured_dataset_contexts(load_server_settings(), refresh=refresh)
+                merged: list[dict[str, Any]] = []
+                for source, path, item_dataset, item_store in contexts:
+                    rows = filter_episodes(path, item_dataset, item_store, user, query)
+                    for row in rows:
+                        row["dataset_id"] = dataset_id(path)
+                        row["dataset_source"] = source
+                        row["dataset_name"] = dataset_source_name(source, path)
+                    merged.extend(rows)
+                merged.sort(key=lambda row: (str(row.get("dataset_name") or ""), int(row.get("episode_index") or 0)))
+                page_count = max(1, math.ceil(len(merged) / page_size))
+                page = min(page, page_count)
+                start = (page - 1) * page_size
+                current_info = {
+                    "total_episodes": sum(len(item_dataset["episodes"]) for _source, _path, item_dataset, _store in contexts),
+                    "total_frames": sum(int(item_dataset["info"].get("total_frames") or 0) for _source, _path, item_dataset, _store in contexts),
+                    "fps": next((item_dataset["info"].get("fps") for _source, _path, item_dataset, _store in contexts if item_dataset["info"].get("fps") is not None), None),
+                    "robot_type": "multiple" if len(contexts) > 1 else (contexts[0][2]["info"].get("robot_type") if contexts else None),
+                }
+                self.send_json(
+                    {
+                        "all_datasets": True,
+                        "dataset_path": str(dataset_path),
+                        "dataset_source": dataset_source_for_path(dataset_path),
+                        "dataset_id": "multi-dataset",
+                        "active_dataset_id": load_server_settings().get("active_dataset_id"),
+                        "datasets": dataset_catalog(load_server_settings()),
+                        "user": user,
+                        "page": page,
+                        "page_count": page_count,
+                        "page_size": page_size,
+                        "total": len(merged),
+                        "episodes": merged[start : start + page_size],
+                        "counts": aggregate_dataset_counts(contexts, user),
+                        "users": aggregate_dataset_users(contexts, user),
+                        "info": current_info,
+                    }
+                )
+                return
             filtered = filter_episodes(dataset_path, dataset, store, user, query)
             page_count = max(1, math.ceil(len(filtered) / page_size))
             page = min(page, page_count)

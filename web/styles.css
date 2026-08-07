@@ -388,6 +388,16 @@ body[data-mode="admin-review"] .left-ui {
   font-size: 12px;
 }
 
+.episode-dataset {
+  display: block;
+  overflow: hidden;
+  color: var(--accent-cyan, #67e8f9);
+  font-size: 0.68rem;
+  line-height: 1.2;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .status-stack {
   display: grid;
   justify-items: end;
