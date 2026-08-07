@@ -135,6 +135,7 @@ DATASET_CACHE: dict[str, dict[str, Any]] = {}
 DATASET_SOURCE_CACHE: dict[str, tuple[str, str]] = {}
 LABEL_STORE_CACHE: dict[str, tuple[tuple[int, int, int, int], dict[str, Any]]] = {}
 MERGED_EPISODE_CACHE: dict[tuple[Any, ...], tuple[float, dict[str, Any]]] = {}
+MERGED_BASE_CACHE: dict[tuple[str, tuple[Any, ...]], dict[str, Any]] = {}
 AGGREGATE_USERS_CACHE: dict[tuple[str, ...], list[dict[str, Any]]] = {}
 FILTERED_EPISODE_CACHE: dict[tuple[str, tuple[Any, ...]], list[dict[str, Any]]] = {}
 TRAJECTORY_CACHE: dict[tuple[str, int, int, int], dict[str, Any]] = {}
@@ -1081,6 +1082,7 @@ def cache_label_store(dataset_path: Path, store: dict[str, Any]) -> None:
     # The cache is only a short-lived response optimization; clearing the dict
     # here avoids holding its lock while a label write is still in progress.
     MERGED_EPISODE_CACHE.clear()
+    MERGED_BASE_CACHE.clear()
     AGGREGATE_USERS_CACHE.clear()
     FILTERED_EPISODE_CACHE.clear()
 
@@ -3722,35 +3724,54 @@ def merged_episodes_payload(
         if cached and not refresh and cached[0] > now:
             return cached[1]
 
-        contexts = configured_dataset_contexts(settings, refresh=refresh)
-        merged: list[dict[str, Any]] = []
-        for source, path, item_dataset, item_store in contexts:
-            filtered_key = (dataset_id(path), query_key)
-            rows = FILTERED_EPISODE_CACHE.get(filtered_key)
-            if rows is None or refresh:
-                rows = filter_episodes(path, item_dataset, item_store, user, query, include_locks=False)
-                if not refresh:
-                    FILTERED_EPISODE_CACHE[filtered_key] = rows
-            locks = presence_snapshot(path, user)
-            rows = [
-                {**row, "locked_by": locks.get(int(row.get("episode_index") or 0), [])}
-                for row in rows
-            ]
-            for row in rows:
-                row["dataset_id"] = dataset_id(path)
-                row["dataset_source"] = source
-                row["dataset_name"] = dataset_source_name(source, path)
-            merged.extend(rows)
-        merged.sort(key=lambda row: (str(row.get("dataset_name") or ""), int(row.get("episode_index") or 0)))
+        base_key = (str(settings.get("updated_at") or ""), query_key)
+        base = MERGED_BASE_CACHE.get(base_key)
+        if base is None or refresh:
+            contexts = configured_dataset_contexts(settings, refresh=refresh)
+            merged: list[dict[str, Any]] = []
+            for source, path, item_dataset, item_store in contexts:
+                filtered_key = (dataset_id(path), query_key)
+                rows = FILTERED_EPISODE_CACHE.get(filtered_key)
+                if rows is None or refresh:
+                    rows = filter_episodes(path, item_dataset, item_store, "", query, include_locks=False)
+                    if not refresh:
+                        FILTERED_EPISODE_CACHE[filtered_key] = rows
+                for row in rows:
+                    item = dict(row)
+                    item["dataset_id"] = dataset_id(path)
+                    item["dataset_source"] = source
+                    item["dataset_name"] = dataset_source_name(source, path)
+                    item["locked_by"] = []
+                    merged.append(item)
+            merged.sort(key=lambda row: (str(row.get("dataset_name") or ""), int(row.get("episode_index") or 0)))
+            current_info = {
+                "total_episodes": sum(len(item_dataset["episodes"]) for _source, _path, item_dataset, _store in contexts),
+                "total_frames": sum(int(item_dataset["info"].get("total_frames") or 0) for _source, _path, item_dataset, _store in contexts),
+                "fps": next((item_dataset["info"].get("fps") for _source, _path, item_dataset, _store in contexts if item_dataset["info"].get("fps") is not None), None),
+                "robot_type": "multiple" if len(contexts) > 1 else (contexts[0][2]["info"].get("robot_type") if contexts else None),
+            }
+            base = {"contexts": contexts, "merged": merged, "info": current_info}
+            if not refresh:
+                MERGED_BASE_CACHE[base_key] = base
+        contexts = base["contexts"]
+        merged = base["merged"]
+        current_info = base["info"]
+        locks_by_dataset = {
+            dataset_id(path): presence_snapshot(path, user)
+            for _source, path, _item_dataset, _item_store in contexts
+        }
         page_count = max(1, math.ceil(len(merged) / page_size))
         page = min(page, page_count)
         start = (page - 1) * page_size
-        current_info = {
-            "total_episodes": sum(len(item_dataset["episodes"]) for _source, _path, item_dataset, _store in contexts),
-            "total_frames": sum(int(item_dataset["info"].get("total_frames") or 0) for _source, _path, item_dataset, _store in contexts),
-            "fps": next((item_dataset["info"].get("fps") for _source, _path, item_dataset, _store in contexts if item_dataset["info"].get("fps") is not None), None),
-            "robot_type": "multiple" if len(contexts) > 1 else (contexts[0][2]["info"].get("robot_type") if contexts else None),
-        }
+        merged_page_rows = [
+            {
+                **row,
+                "locked_by": locks_by_dataset.get(str(row.get("dataset_id")), {}).get(
+                    int(row.get("episode_index") or 0), []
+                ),
+            }
+            for row in merged[start : start + page_size]
+        ]
         payload = {
             "all_datasets": True,
             "dataset_path": str(dataset_path),
@@ -3763,7 +3784,7 @@ def merged_episodes_payload(
             "page_count": page_count,
             "page_size": page_size,
             "total": len(merged),
-            "episodes": merged[start : start + page_size],
+            "episodes": merged_page_rows,
             "counts": aggregate_dataset_counts(contexts, user),
             "users": aggregate_dataset_users(contexts, user),
             "info": current_info,
