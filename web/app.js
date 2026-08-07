@@ -3345,7 +3345,6 @@ async function loadEpisodes({ refresh = false, keepSelection = true, preferLast 
     state.current = null;
     resetNavigationAnchor();
   }
-  applyDatasetContext({ dataset_path: state.datasetPath, dataset_source: state.datasetSource });
   window.localStorage.setItem(USER_STORAGE_KEY, state.user);
   window.localStorage.setItem(PAGE_STORAGE_KEY, String(state.page));
   syncBrowserUrl();
