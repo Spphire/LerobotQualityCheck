@@ -103,7 +103,7 @@ state/actions = left[pos3, quat_wxyz4, gripper1]
               + head[zero7]
 ```
 
-服务端会在首次打开 episode 时按需把这三列编码到 `video_proxy/<dataset_id>/embedded_videos/`，随后继续使用普通的 Range 视频代理。该类型原始坐标为 z-up，平台显示转换为 y-up，并记录在轨迹 metadata 的 `source_world_up_axis`、`world_up_axis`、`state_layout` 和 `quaternion_order` 字段中。
+服务端会在首次打开 episode 时按需把这三列编码到 `video_proxy/<dataset_id>/embedded_videos/`，随后继续使用普通的 Range 视频代理。该类型原始坐标为 z-up，平台位置显示转换为 y-up，但旋转四元数不做坐标变换，按原始 `wxyz` 使用。轨迹 metadata 会分别记录 `position_transform=teleop_rx_minus_90` 和 `quaternion_transform=identity`，以及 `source_world_up_axis`、`world_up_axis`、`state_layout` 和 `quaternion_order`。
 
 ## 标注存储与导出
 

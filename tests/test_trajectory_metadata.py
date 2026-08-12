@@ -21,6 +21,8 @@ class TrajectoryMetadataTest(unittest.TestCase):
         )
 
         self.assertEqual(metadata["transform"], "teleop_rx_minus_90")
+        self.assertEqual(metadata["position_transform"], "teleop_rx_minus_90")
+        self.assertEqual(metadata["quaternion_transform"], "teleop_rx_minus_90")
         self.assertEqual(metadata["world_up_axis"], "y")
 
     def test_unknown_device_keeps_identity_transform(self):
@@ -49,6 +51,8 @@ class TrajectoryMetadataTest(unittest.TestCase):
             {},
         )
         self.assertEqual(metadata["transform"], "teleop_rx_minus_90")
+        self.assertEqual(metadata["position_transform"], "teleop_rx_minus_90")
+        self.assertEqual(metadata["quaternion_transform"], "identity")
         self.assertEqual(metadata["source_world_up_axis"], "z")
         self.assertEqual(metadata["world_up_axis"], "y")
         self.assertEqual(metadata["state_layout"], "left8_right8_head7")

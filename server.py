@@ -3469,11 +3469,16 @@ def trajectory_metadata_for_episode(dataset: dict[str, Any], episode: dict[str, 
         or "teleoperation" in collection_mode_lower
     )
     is_iphone_umi = device_type_lower == "iphone_umi1.0"
+    position_transform = "teleop_rx_minus_90" if (is_teleop or is_iphone_umi) else "identity"
+    quaternion_transform = "identity" if is_iphone_umi else position_transform
 
     return {
         "device_type": device_type,
         "collection_mode": collection_mode,
-        "transform": "teleop_rx_minus_90" if (is_teleop or is_iphone_umi) else "identity",
+        # Keep transform as the legacy position/display selector used by the UI.
+        "transform": position_transform,
+        "position_transform": position_transform,
+        "quaternion_transform": quaternion_transform,
         "world_up_axis": "y",
         "source_world_up_axis": "z" if is_iphone_umi else "y",
         "state_layout": "left8_right8_head7" if is_iphone_umi else "default",
@@ -3591,7 +3596,8 @@ def load_trajectory(dataset_path: Path, dataset: dict[str, Any], episode_index: 
     masks = {"left": [], "right": [], "ego": []}
     ranges: dict[str, list[float | None]] = {"x": [None, None], "y": [None, None], "z": [None, None]}
     trajectory_metadata = trajectory_metadata_for_episode(dataset, episode)
-    transform_teleop = trajectory_metadata.get("transform") == "teleop_rx_minus_90"
+    position_transform_teleop = trajectory_metadata.get("position_transform") == "teleop_rx_minus_90"
+    quaternion_transform_teleop = trajectory_metadata.get("quaternion_transform") == "teleop_rx_minus_90"
 
     for row_index, row in enumerate(rows[::stride]):
         state = row.get("observation.state")
@@ -3624,12 +3630,14 @@ def load_trajectory(dataset_path: Path, dataset: dict[str, Any], episode_index: 
             ego = point_from_pose(row.get("observation.extra.ego.raw_pose"))
             ego_quat = quat_from_pose(row.get("observation.extra.ego.raw_pose"))
 
-        if transform_teleop:
+        if position_transform_teleop:
             left = teleop_point_to_robopocket(left)
             right = teleop_point_to_robopocket(right)
             ego = teleop_point_to_robopocket(ego)
             action_left = teleop_point_to_robopocket(action_left)
             action_right = teleop_point_to_robopocket(action_right)
+
+        if quaternion_transform_teleop:
             left_quat = teleop_quat_to_robopocket(left_quat)
             right_quat = teleop_quat_to_robopocket(right_quat)
             ego_quat = teleop_quat_to_robopocket(ego_quat)
