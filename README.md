@@ -19,6 +19,7 @@
 - 腕部细查：点击夹爪曲线可在暂停的半透明弹窗中打开对应腕部视频，并从点击时刻开始查看。
 - 管理员能力：`/admin/review` 可设置本地路径或 `ssh://` 数据集来源、忽略占用锁、按状态筛选和强制标注；`/admin` 只读汇总；`/rank` 提供标注员和采集人复盘。
 - 远程数据集：管理员可直接加载 SSH URI。服务端会把数据集 materialize 到本地缓存后再读取 Parquet 和视频，避免浏览器跨主机访问。
+- 多数据集合并：settings 可同时配置任意多个本地或 SSH 数据集。普通质检页会合并显示全部 episode，并在每条记录上保留来源数据集；标注和视频代理仍按各自 `dataset_id` 隔离。
 
 ## 页面与权限
 
@@ -93,6 +94,16 @@ dataset_root/
 ```
 
 轨迹优先从 `observation.state` 与 `action` 读取，并兼容 `observation.extra.{left,right,ego}.raw_pose`、手部状态和有效性 mask。Parquet 中的 pose 约定为 `[x, y, z, qw, qx, qy, qz]`。数据集元数据中的 `device_type` 决定需要采用的显示坐标兼容分支。
+
+`videos/` 不是强制目录。`iphone_umi1.0` 数据集使用 `robot_type=umi_dual_arm_quat_3view`，三路 PNG 图像作为 Parquet 的 `head_image`、`left_wrist_image`、`right_wrist_image` struct 列内嵌保存，同时使用 `state` 和 `actions` 两个 23 维列：
+
+```text
+state/actions = left[pos3, quat_wxyz4, gripper1]
+              + right[pos3, quat_wxyz4, gripper1]
+              + head[zero7]
+```
+
+服务端会在首次打开 episode 时按需把这三列编码到 `video_proxy/<dataset_id>/embedded_videos/`，随后继续使用普通的 Range 视频代理。该类型原始坐标为 z-up，平台显示转换为 y-up，并记录在轨迹 metadata 的 `source_world_up_axis`、`world_up_axis`、`state_layout` 和 `quaternion_order` 字段中。
 
 ## 标注存储与导出
 

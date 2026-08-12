@@ -31,6 +31,42 @@ class TrajectoryMetadataTest(unittest.TestCase):
 
         self.assertEqual(metadata["transform"], "identity")
 
+    def test_iphone_umi_schema_uses_z_up_teleop_transform(self):
+        info = {
+            "robot_type": "umi_dual_arm_quat_3view",
+            "features": {
+                "head_image": {"dtype": "image"},
+                "left_wrist_image": {"dtype": "image"},
+                "right_wrist_image": {"dtype": "image"},
+                "state": {"dtype": "float32", "shape": [23]},
+                "actions": {"dtype": "float32", "shape": [23]},
+            },
+        }
+
+        self.assertTrue(server.iphone_umi_schema(info))
+        metadata = server.trajectory_metadata_for_episode(
+            {"info": {**info, "device_type": "iphone_umi1.0"}},
+            {},
+        )
+        self.assertEqual(metadata["transform"], "teleop_rx_minus_90")
+        self.assertEqual(metadata["source_world_up_axis"], "z")
+        self.assertEqual(metadata["world_up_axis"], "y")
+        self.assertEqual(metadata["state_layout"], "left8_right8_head7")
+        self.assertEqual(metadata["quaternion_order"], "wxyz")
+
+    def test_iphone_umi_embedded_images_map_to_existing_camera_contract(self):
+        videos = server.embedded_videos_for_episodes(
+            [{"episode_index": 7}],
+            {7: "data/chunk-000/episode_000007.parquet"},
+        )[7]
+
+        self.assertEqual(
+            [video["camera"] for video in videos],
+            ["image", "wrist_image_1", "wrist_image_2"],
+        )
+        self.assertTrue(all(video["kind"] == "parquet_image" for video in videos))
+        self.assertTrue(all(video["data_rel_path"].endswith("episode_000007.parquet") for video in videos))
+
 
 if __name__ == "__main__":
     unittest.main()

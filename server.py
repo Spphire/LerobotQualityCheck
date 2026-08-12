@@ -139,6 +139,7 @@ MERGED_BASE_CACHE: dict[tuple[str, tuple[Any, ...]], dict[str, Any]] = {}
 AGGREGATE_USERS_CACHE: dict[tuple[str, ...], list[dict[str, Any]]] = {}
 FILTERED_EPISODE_CACHE: dict[tuple[str, tuple[Any, ...]], list[dict[str, Any]]] = {}
 TRAJECTORY_CACHE: dict[tuple[str, int, int, int], dict[str, Any]] = {}
+EMBEDDED_VIDEO_LOCKS: dict[tuple[str, int], threading.Lock] = {}
 RAW_METADATA_CACHE: dict[str, dict[str, Any]] = {}
 COLLECTOR_CACHE_QUEUE: queue.PriorityQueue[tuple[int, int, str, str, int, str]] = queue.PriorityQueue()
 COLLECTOR_CACHE_PENDING: dict[tuple[str, int], int] = {}
@@ -151,6 +152,7 @@ LABEL_STORE_CACHE_LOCK = threading.Lock()
 MERGED_EPISODE_CACHE_LOCK = threading.Lock()
 AGGREGATE_USERS_CACHE_LOCK = threading.Lock()
 RAW_METADATA_LOCK = threading.Lock()
+EMBEDDED_VIDEO_LOCKS_LOCK = threading.Lock()
 DM3_TOKEN_LOCK = threading.Lock()
 COLLECTOR_CACHE_LOCK = threading.Lock()
 LABEL_LOCK = threading.Lock()
@@ -364,7 +366,6 @@ def verify_remote_dataset(remote: dict[str, Any]) -> None:
         f"{remote['remote_path']}/meta/episodes.jsonl",
         f"{remote['remote_path']}/meta/tasks.jsonl",
         f"{remote['remote_path']}/data",
-        f"{remote['remote_path']}/videos",
     ]
     checks = " && ".join(f"test -e {shlex.quote(path)}" for path in required)
     proc = subprocess.run(
@@ -555,7 +556,6 @@ def dataset_catalog(settings: dict[str, Any] | None = None) -> list[dict[str, An
                     path / "meta" / "episodes.jsonl",
                     path / "meta" / "tasks.jsonl",
                     path / "data",
-                    path / "videos",
                 )
             )
             item = {
@@ -603,7 +603,6 @@ def require_ready_dataset(dataset_path: Path) -> None:
         dataset_path / "meta" / "episodes.jsonl",
         dataset_path / "meta" / "tasks.jsonl",
         dataset_path / "data",
-        dataset_path / "videos",
     ]
     missing = [str(path.relative_to(dataset_path)) for path in required if not path.exists()]
     if missing:
@@ -1384,6 +1383,58 @@ def scan_videos(dataset_path: Path) -> dict[int, list[dict[str, Any]]]:
     return videos_by_episode
 
 
+def iphone_umi_schema(info: dict[str, Any]) -> bool:
+    features = info.get("features") if isinstance(info.get("features"), dict) else {}
+    return (
+        str(info.get("robot_type") or "").strip().lower() == "umi_dual_arm_quat_3view"
+        and all(str((features.get(key) or {}).get("dtype") or "").lower() == "image" for key in (
+            "head_image",
+            "left_wrist_image",
+            "right_wrist_image",
+        ))
+        and "state" in features
+        and "actions" in features
+    )
+
+
+def embedded_video_rel_path(episode_index: int, column: str) -> str:
+    chunk = episode_index // 1000
+    return f"embedded_videos/chunk-{chunk:03d}/{column}/episode_{episode_index:06d}.mp4"
+
+
+def embedded_videos_for_episodes(
+    episodes: list[dict[str, Any]],
+    data_files: dict[int, str],
+) -> dict[int, list[dict[str, Any]]]:
+    camera_specs = (
+        ("head_image", "image", "observation.images.image"),
+        ("left_wrist_image", "wrist_image_1", "observation.images.wrist_image_1"),
+        ("right_wrist_image", "wrist_image_2", "observation.images.wrist_image_2"),
+    )
+    videos_by_episode: dict[int, list[dict[str, Any]]] = {}
+    for episode in episodes:
+        try:
+            episode_index = int(episode["episode_index"])
+        except (KeyError, TypeError, ValueError):
+            continue
+        parquet_rel_path = data_files.get(episode_index)
+        if not parquet_rel_path:
+            continue
+        videos_by_episode[episode_index] = [
+            {
+                "camera": camera,
+                "key": key,
+                "rel_path": embedded_video_rel_path(episode_index, column),
+                "size": 0,
+                "kind": "parquet_image",
+                "column": column,
+                "data_rel_path": parquet_rel_path,
+            }
+            for column, camera, key in camera_specs
+        ]
+    return videos_by_episode
+
+
 def scan_data_files(dataset_path: Path) -> dict[int, str]:
     data_root = dataset_path / "data"
     data_files: dict[int, str] = {}
@@ -1624,6 +1675,122 @@ def transcode_proxy_video(src: Path, dst: Path, encoder: str, gpu_index: int | N
         return "failed", (proc.stderr or "")[-500:]
     os.replace(tmp, dst)
     return "built", ""
+
+
+def embedded_video_lock(dataset_path: Path, episode_index: int) -> threading.Lock:
+    key = (dataset_id(dataset_path), episode_index)
+    with EMBEDDED_VIDEO_LOCKS_LOCK:
+        return EMBEDDED_VIDEO_LOCKS.setdefault(key, threading.Lock())
+
+
+def embedded_image_bytes(value: Any) -> bytes | None:
+    if isinstance(value, dict):
+        raw = value.get("bytes")
+        return bytes(raw) if isinstance(raw, (bytes, bytearray, memoryview)) else None
+    if isinstance(value, (bytes, bytearray, memoryview)):
+        return bytes(value)
+    return None
+
+
+def encode_embedded_video(
+    dataset_path: Path,
+    video: dict[str, Any],
+    fps: float,
+) -> Path:
+    rel_path = str(video.get("rel_path") or "")
+    data_rel_path = str(video.get("data_rel_path") or "")
+    column = str(video.get("column") or "")
+    if not rel_path or not data_rel_path or not column:
+        raise AppError("Invalid embedded video metadata", 500)
+    parquet_path = (dataset_path / proxy_rel_path(data_rel_path)).resolve()
+    if not parquet_path.is_file():
+        raise AppError(f"Parquet file not found: {data_rel_path}", 404)
+    output_path = proxy_output_path_for_rel(dataset_path, rel_path)
+    if not proxy_needs_rebuild(parquet_path, output_path):
+        return output_path
+
+    try:
+        import pyarrow.parquet as pq
+    except Exception as exc:
+        raise AppError(f"pyarrow is required to read embedded video frames: {exc}", 500)
+
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    tmp_path = output_path.with_suffix(output_path.suffix + ".tmp.mp4")
+    try:
+        tmp_path.unlink(missing_ok=True)
+    except OSError:
+        pass
+    command = [
+        "ffmpeg",
+        "-hide_banner",
+        "-loglevel",
+        "error",
+        "-y",
+        "-f",
+        "image2pipe",
+        "-framerate",
+        str(max(1.0, float(fps or 10))),
+        "-i",
+        "pipe:0",
+        "-an",
+        "-c:v",
+        "libx264",
+        "-preset",
+        PROXY_BUILD_PRESET,
+        "-crf",
+        str(PROXY_BUILD_CRF),
+        "-pix_fmt",
+        "yuv420p",
+        "-profile:v",
+        "main",
+        "-level",
+        "3.1",
+        "-movflags",
+        "+faststart",
+        "-threads",
+        "1",
+        str(tmp_path),
+    ]
+    process = subprocess.Popen(command, stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+    try:
+        table = pq.read_table(parquet_path, columns=[column])
+        assert process.stdin is not None
+        for value in table[column].to_pylist():
+            frame = embedded_image_bytes(value)
+            if not frame:
+                raise AppError(f"Embedded image column {column} contains an empty frame", 500)
+            process.stdin.write(frame)
+        process.stdin.close()
+        stderr = process.stderr.read() if process.stderr else b""
+        return_code = process.wait()
+    except Exception:
+        process.kill()
+        process.wait()
+        tmp_path.unlink(missing_ok=True)
+        raise
+    if return_code != 0:
+        tmp_path.unlink(missing_ok=True)
+        raise AppError(f"Failed to encode embedded video {column}: {stderr.decode('utf-8', 'replace')[-500:]}", 500)
+    os.replace(tmp_path, output_path)
+    return output_path
+
+
+def ensure_embedded_episode_videos(
+    dataset_path: Path,
+    dataset: dict[str, Any],
+    episode_index: int,
+) -> None:
+    videos = dataset.get("videos_by_episode", {}).get(episode_index, [])
+    embedded = [video for video in videos if video.get("kind") == "parquet_image"]
+    if not embedded:
+        return
+    lock = embedded_video_lock(dataset_path, episode_index)
+    with lock:
+        fps = clean_float((dataset.get("info") or {}).get("fps")) or 10.0
+        with concurrent.futures.ThreadPoolExecutor(max_workers=min(3, len(embedded))) as pool:
+            futures = [pool.submit(encode_embedded_video, dataset_path, video, fps) for video in embedded]
+            for future in futures:
+                future.result()
 
 
 def parse_utc_timestamp(value: str) -> datetime | None:
@@ -1899,6 +2066,14 @@ class ProxyBuildJob:
 
 
 def schedule_proxy_build(dataset_path: Path, dataset: dict[str, Any], reason: str = "load", force: bool = False) -> dict[str, Any]:
+    if dataset.get("embedded_video_mode"):
+        return {
+            "dataset_id": dataset_id(dataset_path),
+            "dataset_path": str(dataset_path),
+            "status": "on_demand",
+            "auto": False,
+            "reason": "parquet_image",
+        }
     if not PROXY_BUILD_ON_DATASET_LOAD and not force:
         return proxy_build_status(dataset_path)
     dataset_key = dataset_id(dataset_path)
@@ -1918,6 +2093,16 @@ def schedule_proxy_build(dataset_path: Path, dataset: dict[str, Any], reason: st
 
 
 def prioritize_proxy_episode(dataset_path: Path, dataset: dict[str, Any], episode_index: int) -> dict[str, Any]:
+    if dataset.get("embedded_video_mode"):
+        ensure_embedded_episode_videos(dataset_path, dataset, episode_index)
+        return {
+            "dataset_id": dataset_id(dataset_path),
+            "dataset_path": str(dataset_path),
+            "status": "ready",
+            "episode_index": episode_index,
+            "auto": False,
+            "reason": "parquet_image",
+        }
     if not PROXY_BUILD_ON_DATASET_LOAD:
         return proxy_build_status(dataset_path)
     dataset_key = dataset_id(dataset_path)
@@ -2009,8 +2194,14 @@ def load_dataset(dataset_path: Path, refresh: bool = False) -> dict[str, Any]:
     info = read_json(info_path, fallback={}) or {}
     tasks = read_jsonl(dataset_path / "meta" / "tasks.jsonl")
     episodes = read_jsonl(episodes_path)
-    videos_by_episode = scan_videos(dataset_path)
     data_files = scan_data_files(dataset_path)
+    embedded_video_mode = iphone_umi_schema(info)
+    if embedded_video_mode:
+        info = dict(info)
+        info["device_type"] = "iphone_umi1.0"
+        videos_by_episode = embedded_videos_for_episodes(episodes, data_files)
+    else:
+        videos_by_episode = scan_videos(dataset_path)
 
     normalized_episodes = []
     for episode in episodes:
@@ -2035,6 +2226,7 @@ def load_dataset(dataset_path: Path, refresh: bool = False) -> dict[str, Any]:
         "episodes": normalized_episodes,
         "episode_by_index": {item["episode_index"]: item for item in normalized_episodes},
         "videos_by_episode": videos_by_episode,
+        "embedded_video_mode": embedded_video_mode,
     }
 
     with DATASET_CACHE_LOCK:
@@ -3257,12 +3449,16 @@ def trajectory_metadata_for_episode(dataset: dict[str, Any], episode: dict[str, 
         or device_type_lower in {"inference_r1", "rollout"}
         or "teleoperation" in collection_mode_lower
     )
+    is_iphone_umi = device_type_lower == "iphone_umi1.0"
 
     return {
         "device_type": device_type,
         "collection_mode": collection_mode,
-        "transform": "teleop_rx_minus_90" if is_teleop else "identity",
+        "transform": "teleop_rx_minus_90" if (is_teleop or is_iphone_umi) else "identity",
         "world_up_axis": "y",
+        "source_world_up_axis": "z" if is_iphone_umi else "y",
+        "state_layout": "left8_right8_head7" if is_iphone_umi else "default",
+        "quaternion_order": "wxyz",
     }
 
 
@@ -3335,7 +3531,9 @@ def load_trajectory(dataset_path: Path, dataset: dict[str, Any], episode_index: 
         "timestamp",
         "frame_index",
         "observation.state",
+        "state",
         "action",
+        "actions",
         "observation.extra.left.raw_pose",
         "observation.extra.right.raw_pose",
         "observation.extra.ego.raw_pose",
@@ -3378,7 +3576,11 @@ def load_trajectory(dataset_path: Path, dataset: dict[str, Any], episode_index: 
 
     for row_index, row in enumerate(rows[::stride]):
         state = row.get("observation.state")
+        if state is None:
+            state = row.get("state")
         action = row.get("action")
+        if action is None:
+            action = row.get("actions")
         frame = row.get("frame_index")
         frames.append(int(frame) if frame is not None else row_index * stride)
         timestamps.append(clean_float(row.get("timestamp")))

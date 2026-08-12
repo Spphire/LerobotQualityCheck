@@ -76,7 +76,9 @@ these to agree before calling it complete:
 
 - `/api/settings`, `/api/health`, and `/api/episodes?page=1&page_size=1` have the same `dataset_id`.
 - `dataset_source` equals the requested path or URI.
-- `dataset_path` exists locally and contains ready metadata, Parquet, and video directories.
+- `dataset_path` exists locally and contains ready metadata and Parquet data. A conventional
+  `videos/` tree is optional: `iphone_umi1.0` datasets may store the three image streams as
+  embedded Parquet image columns and receive on-demand proxy MP4s under `video_proxy/`.
 - The video proxy state reaches `complete` or reports its exact pending/failed state.
 - `dataset_paths` may contain multiple local or SSH sources. Each catalog item has its own
   `dataset_id`, cache, proxy state, and `labels.db`; `dataset_source` and `dataset_path` refer to
@@ -104,7 +106,9 @@ SSH key to another server without user authorization.
 
 - Video playback, gripper curves, and the 3D highlight share the same frame position.
 - Render state and action for left/right hands. Head pose is a camera reference, not a visible 3D
-  trajectory.
+  trajectory. For `iphone_umi1.0`, read the aliases `state`/`actions` and use the
+  `left8_right8_head7` layout with wxyz quaternions; its source world-up is z and the display
+  transform is recorded by trajectory metadata.
 - Pose fallback uses `[x, y, z, qw, qx, qy, qz]`. Do not alter quaternion order or coordinate
   transforms based on visual intuition alone; inspect `device_type` and existing trajectory tests.
 - `teleoperation*`, `inference_r1`, and `rollout` use the teleop compatibility transform. Preserve the
