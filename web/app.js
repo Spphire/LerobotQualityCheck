@@ -1738,11 +1738,10 @@ function applyPhoneQuickVideoCardSize(card, video, contentWidth, videoHeight, ca
   card.style.maxWidth = widthPx;
   card.style.flexBasis = widthPx;
   card.style.height = heightPx;
-  if (video) {
-    video.style.width = contentWidthPx;
-    video.style.minWidth = contentWidthPx;
-    video.style.maxWidth = contentWidthPx;
-    video.style.height = videoHeightPx;
+  const media = card.querySelector(".quick-video-media");
+  if (media) {
+    media.style.width = contentWidthPx;
+    media.style.height = videoHeightPx;
   }
 }
 
@@ -1757,12 +1756,10 @@ function clearPhoneQuickVideoLayout(cards) {
     card.style.maxWidth = "";
     card.style.flexBasis = "";
     card.style.height = "";
-    const video = card.querySelector(".quick-video");
-    if (video) {
-      video.style.width = "";
-      video.style.minWidth = "";
-      video.style.maxWidth = "";
-      video.style.height = "";
+    const media = card.querySelector(".quick-video-media");
+    if (media) {
+      media.style.width = "";
+      media.style.height = "";
     }
   });
 }
@@ -1839,10 +1836,11 @@ function resetQuickVideoMediaLayout() {
       card.style.maxWidth = "";
       card.style.flexBasis = "";
       card.style.height = "";
-      video.style.width = "";
-      video.style.minWidth = "";
-      video.style.maxWidth = "";
-      video.style.height = "";
+      const media = card.querySelector(".quick-video-media");
+      if (media) {
+        media.style.width = "";
+        media.style.height = "";
+      }
     }
   });
 }
