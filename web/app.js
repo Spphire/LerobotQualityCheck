@@ -1710,28 +1710,6 @@ function syncQuickVideoAspect(index, video) {
   syncQuickVideoLayout();
 }
 
-function syncQuickVideoFrameLayout() {
-  quickVideoEntries().forEach(([, video]) => {
-    const frame = video?.closest(".video-aspect-frame");
-    const media = video?.closest(".video-aspect-container");
-    if (!frame || !media) {
-      return;
-    }
-    const aspect = quickVideoAspectValue(video, video.closest(".quick-video-card"));
-    const mediaRect = media.getBoundingClientRect();
-    if (!mediaRect.width || !mediaRect.height || !Number.isFinite(aspect) || aspect <= 0) {
-      return;
-    }
-    const height = Math.min(mediaRect.height, mediaRect.width / aspect);
-    const width = height * aspect;
-    frame.style.setProperty("--video-aspect-ratio", String(aspect));
-    frame.style.setProperty("--video-aspect-frame-width", `${Math.max(1, width)}px`);
-    frame.style.setProperty("--video-aspect-frame-height", `${Math.max(1, height)}px`);
-    frame.style.width = `${Math.max(1, width)}px`;
-    frame.style.height = `${Math.max(1, height)}px`;
-  });
-}
-
 function quickVideoAspectValue(video, card) {
   if (video?.videoWidth && video.videoHeight) {
     return video.videoWidth / video.videoHeight;
@@ -1798,12 +1776,10 @@ function syncQuickVideoLayout() {
   }
   if (!state.phone) {
     clearPhoneQuickVideoLayout(cards.map((item) => item.card));
-    syncQuickVideoFrameLayout();
     return;
   }
   const container = document.querySelector(".phone-video-stream .video-stream-inner");
   if (!container) {
-    syncQuickVideoFrameLayout();
     return;
   }
   const containerRect = container.getBoundingClientRect();
@@ -1813,7 +1789,6 @@ function syncQuickVideoLayout() {
   const availableWidth = Math.max(0, containerRect.width - gap * Math.max(0, cards.length - 1));
   const availableHeight = Math.max(0, containerRect.height);
   if (!availableWidth || !availableHeight) {
-    syncQuickVideoFrameLayout();
     return;
   }
   const measuredCards = cards.map((item) => {
@@ -1839,7 +1814,6 @@ function syncQuickVideoLayout() {
     const contentWidth = videoHeight * aspect;
     applyPhoneQuickVideoCardSize(card, video, contentWidth, videoHeight, contentWidth + borderX, cardHeight);
   });
-  syncQuickVideoFrameLayout();
 }
 
 function resetQuickVideoMediaLayout() {
@@ -1866,14 +1840,6 @@ function resetQuickVideoMediaLayout() {
       if (media) {
         media.style.width = "";
         media.style.height = "";
-      }
-      const frame = card.querySelector(".video-aspect-frame");
-      if (frame) {
-        frame.style.removeProperty("--video-aspect-ratio");
-        frame.style.removeProperty("--video-aspect-frame-width");
-        frame.style.removeProperty("--video-aspect-frame-height");
-        frame.style.width = "";
-        frame.style.height = "";
       }
     }
   });
