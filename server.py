@@ -538,6 +538,12 @@ def dataset_source_name(source: str, fallback_path: Path | None = None) -> str:
     return Path(source).name or (fallback_path.name if fallback_path is not None else "dataset")
 
 
+def dataset_device_type(info: dict[str, Any]) -> str:
+    if iphone_umi_schema(info):
+        return "iphone_umi1.0"
+    return string_value(info.get("device_type"))
+
+
 def dataset_catalog(settings: dict[str, Any] | None = None) -> list[dict[str, Any]]:
     settings = settings if isinstance(settings, dict) else load_server_settings()
     active_id = str(settings.get("active_dataset_id") or "").strip()
@@ -567,6 +573,8 @@ def dataset_catalog(settings: dict[str, Any] | None = None) -> list[dict[str, An
                 "total_episodes": info.get("total_episodes"),
                 "total_frames": info.get("total_frames"),
                 "fps": info.get("fps"),
+                "device_type": dataset_device_type(info),
+                "robot_type": string_value(info.get("robot_type")),
             }
             item["active"] = item["dataset_id"] == active_id
             catalog.append(item)
@@ -594,6 +602,8 @@ def current_dataset_payload(dataset_path: Path, dataset: dict[str, Any] | None =
         "total_episodes": info.get("total_episodes", len(episodes) if episodes else None),
         "total_frames": info.get("total_frames"),
         "fps": info.get("fps"),
+        "device_type": dataset_device_type(info),
+        "robot_type": string_value(info.get("robot_type")),
     }
 
 
@@ -1385,15 +1395,19 @@ def scan_videos(dataset_path: Path) -> dict[int, list[dict[str, Any]]]:
 
 def iphone_umi_schema(info: dict[str, Any]) -> bool:
     features = info.get("features") if isinstance(info.get("features"), dict) else {}
+    image_features = ("head_image", "left_wrist_image", "right_wrist_image")
+    state_features = ("state", "actions")
+
+    def feature_shape(name: str) -> list[Any] | None:
+        shape = (features.get(name) or {}).get("shape")
+        return list(shape) if isinstance(shape, (list, tuple)) else None
+
     return (
         str(info.get("robot_type") or "").strip().lower() == "umi_dual_arm_quat_3view"
-        and all(str((features.get(key) or {}).get("dtype") or "").lower() == "image" for key in (
-            "head_image",
-            "left_wrist_image",
-            "right_wrist_image",
-        ))
-        and "state" in features
-        and "actions" in features
+        and all(str((features.get(key) or {}).get("dtype") or "").lower() == "image" for key in image_features)
+        and all(feature_shape(key) == [224, 224, 3] for key in image_features)
+        and all(str((features.get(key) or {}).get("dtype") or "").lower() == "float32" for key in state_features)
+        and all(feature_shape(key) == [23] for key in state_features)
     )
 
 
@@ -3378,6 +3392,11 @@ def full_episode(
     videos = []
     for video in dataset["videos_by_episode"].get(episode_index, []):
         item = dict(video)
+        if item.get("kind") == "parquet_image":
+            try:
+                item["size"] = proxy_video_path(dataset_path, video["rel_path"]).stat().st_size
+            except OSError:
+                item["size"] = 0
         item["url"] = media_url(dataset_path, video["rel_path"])
         videos.append(item)
     label = label_for_episode(store, user, episode_index)

@@ -35,9 +35,9 @@ class TrajectoryMetadataTest(unittest.TestCase):
         info = {
             "robot_type": "umi_dual_arm_quat_3view",
             "features": {
-                "head_image": {"dtype": "image"},
-                "left_wrist_image": {"dtype": "image"},
-                "right_wrist_image": {"dtype": "image"},
+                "head_image": {"dtype": "image", "shape": [224, 224, 3]},
+                "left_wrist_image": {"dtype": "image", "shape": [224, 224, 3]},
+                "right_wrist_image": {"dtype": "image", "shape": [224, 224, 3]},
                 "state": {"dtype": "float32", "shape": [23]},
                 "actions": {"dtype": "float32", "shape": [23]},
             },
@@ -53,6 +53,11 @@ class TrajectoryMetadataTest(unittest.TestCase):
         self.assertEqual(metadata["world_up_axis"], "y")
         self.assertEqual(metadata["state_layout"], "left8_right8_head7")
         self.assertEqual(metadata["quaternion_order"], "wxyz")
+
+        self.assertEqual(server.dataset_device_type(info), "iphone_umi1.0")
+
+        invalid = {**info, "features": {**info["features"], "state": {"dtype": "float32", "shape": [22]}}}
+        self.assertFalse(server.iphone_umi_schema(invalid))
 
     def test_iphone_umi_embedded_images_map_to_existing_camera_contract(self):
         videos = server.embedded_videos_for_episodes(
