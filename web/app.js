@@ -1712,8 +1712,8 @@ function syncQuickVideoAspect(index, video) {
 
 function syncQuickVideoFrameLayout() {
   quickVideoEntries().forEach(([, video]) => {
-    const frame = video?.closest(".quick-video-frame");
-    const media = video?.closest(".quick-video-media");
+    const frame = video?.closest(".video-aspect-frame");
+    const media = video?.closest(".video-aspect-container");
     if (!frame || !media) {
       return;
     }
@@ -1724,9 +1724,9 @@ function syncQuickVideoFrameLayout() {
     }
     const height = Math.min(mediaRect.height, mediaRect.width / aspect);
     const width = height * aspect;
-    frame.style.setProperty("--quick-video-aspect", String(aspect));
-    frame.style.setProperty("--quick-video-frame-width", `${Math.max(1, width)}px`);
-    frame.style.setProperty("--quick-video-frame-height", `${Math.max(1, height)}px`);
+    frame.style.setProperty("--video-aspect-ratio", String(aspect));
+    frame.style.setProperty("--video-aspect-frame-width", `${Math.max(1, width)}px`);
+    frame.style.setProperty("--video-aspect-frame-height", `${Math.max(1, height)}px`);
     frame.style.width = `${Math.max(1, width)}px`;
     frame.style.height = `${Math.max(1, height)}px`;
   });
@@ -1760,7 +1760,7 @@ function applyPhoneQuickVideoCardSize(card, video, contentWidth, videoHeight, ca
   card.style.maxWidth = widthPx;
   card.style.flexBasis = widthPx;
   card.style.height = heightPx;
-  const media = card.querySelector(".quick-video-media");
+  const media = card.querySelector(".video-aspect-container");
   if (media) {
     media.style.width = contentWidthPx;
     media.style.height = videoHeightPx;
@@ -1778,7 +1778,7 @@ function clearPhoneQuickVideoLayout(cards) {
     card.style.maxWidth = "";
     card.style.flexBasis = "";
     card.style.height = "";
-    const media = card.querySelector(".quick-video-media");
+    const media = card.querySelector(".video-aspect-container");
     if (media) {
       media.style.width = "";
       media.style.height = "";
@@ -1862,16 +1862,16 @@ function resetQuickVideoMediaLayout() {
       card.style.maxWidth = "";
       card.style.flexBasis = "";
       card.style.height = "";
-      const media = card.querySelector(".quick-video-media");
+      const media = card.querySelector(".video-aspect-container");
       if (media) {
         media.style.width = "";
         media.style.height = "";
       }
-      const frame = card.querySelector(".quick-video-frame");
+      const frame = card.querySelector(".video-aspect-frame");
       if (frame) {
-        frame.style.removeProperty("--quick-video-aspect");
-        frame.style.removeProperty("--quick-video-frame-width");
-        frame.style.removeProperty("--quick-video-frame-height");
+        frame.style.removeProperty("--video-aspect-ratio");
+        frame.style.removeProperty("--video-aspect-frame-width");
+        frame.style.removeProperty("--video-aspect-frame-height");
         frame.style.width = "";
         frame.style.height = "";
       }

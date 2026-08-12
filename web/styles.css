@@ -884,7 +884,7 @@ canvas {
   background: rgba(255, 255, 255, 0.36);
 }
 
-.quick-video-media {
+.video-aspect-container {
   display: flex;
   align-items: center;
   justify-content: center;
@@ -894,11 +894,11 @@ canvas {
   background: #0b0f14;
 }
 
-.quick-video-frame {
+.video-aspect-frame {
   position: relative;
   flex: 0 0 auto;
-  width: var(--quick-video-frame-width, 100%);
-  height: var(--quick-video-frame-height, 100%);
+  width: var(--video-aspect-frame-width, 100%);
+  height: var(--video-aspect-frame-height, 100%);
   max-width: 100%;
   max-height: 100%;
   aspect-ratio: var(--quick-video-aspect, 16 / 9);
@@ -1768,12 +1768,12 @@ body[data-mode="phone"] .quick-video {
   height: 100%;
 }
 
-body[data-mode="phone"] .quick-video-media {
+body[data-mode="phone"] .video-aspect-container {
   width: var(--phone-video-width, 100%);
   height: var(--phone-video-height, 100%);
 }
 
-body[data-mode="phone"] .quick-video-frame {
+body[data-mode="phone"] .video-aspect-frame {
   width: 100%;
   height: 100%;
 }
