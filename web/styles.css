@@ -894,9 +894,28 @@ canvas {
   background: #0b0f14;
 }
 
+.quick-video-frame {
+  position: relative;
+  flex: 0 0 auto;
+  width: var(--quick-video-frame-width, 100%);
+  height: var(--quick-video-frame-height, 100%);
+  max-width: 100%;
+  max-height: 100%;
+  aspect-ratio: var(--quick-video-aspect, 16 / 9);
+  overflow: hidden;
+  background: #0b0f14;
+}
+
 .quick-video-card canvas {
   width: 100%;
   height: 100%;
+}
+
+.quick-video {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
 }
 
 .head-hand-overlay {
@@ -1752,6 +1771,11 @@ body[data-mode="phone"] .quick-video {
 body[data-mode="phone"] .quick-video-media {
   width: var(--phone-video-width, 100%);
   height: var(--phone-video-height, 100%);
+}
+
+body[data-mode="phone"] .quick-video-frame {
+  width: 100%;
+  height: 100%;
 }
 
 .phone-drawer {

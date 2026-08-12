@@ -1710,6 +1710,28 @@ function syncQuickVideoAspect(index, video) {
   syncQuickVideoLayout();
 }
 
+function syncQuickVideoFrameLayout() {
+  quickVideoEntries().forEach(([, video]) => {
+    const frame = video?.closest(".quick-video-frame");
+    const media = video?.closest(".quick-video-media");
+    if (!frame || !media) {
+      return;
+    }
+    const aspect = quickVideoAspectValue(video, video.closest(".quick-video-card"));
+    const mediaRect = media.getBoundingClientRect();
+    if (!mediaRect.width || !mediaRect.height || !Number.isFinite(aspect) || aspect <= 0) {
+      return;
+    }
+    const height = Math.min(mediaRect.height, mediaRect.width / aspect);
+    const width = height * aspect;
+    frame.style.setProperty("--quick-video-aspect", String(aspect));
+    frame.style.setProperty("--quick-video-frame-width", `${Math.max(1, width)}px`);
+    frame.style.setProperty("--quick-video-frame-height", `${Math.max(1, height)}px`);
+    frame.style.width = `${Math.max(1, width)}px`;
+    frame.style.height = `${Math.max(1, height)}px`;
+  });
+}
+
 function quickVideoAspectValue(video, card) {
   if (video?.videoWidth && video.videoHeight) {
     return video.videoWidth / video.videoHeight;
@@ -1776,10 +1798,12 @@ function syncQuickVideoLayout() {
   }
   if (!state.phone) {
     clearPhoneQuickVideoLayout(cards.map((item) => item.card));
+    syncQuickVideoFrameLayout();
     return;
   }
   const container = document.querySelector(".phone-video-stream .video-stream-inner");
   if (!container) {
+    syncQuickVideoFrameLayout();
     return;
   }
   const containerRect = container.getBoundingClientRect();
@@ -1789,6 +1813,7 @@ function syncQuickVideoLayout() {
   const availableWidth = Math.max(0, containerRect.width - gap * Math.max(0, cards.length - 1));
   const availableHeight = Math.max(0, containerRect.height);
   if (!availableWidth || !availableHeight) {
+    syncQuickVideoFrameLayout();
     return;
   }
   const measuredCards = cards.map((item) => {
@@ -1814,6 +1839,7 @@ function syncQuickVideoLayout() {
     const contentWidth = videoHeight * aspect;
     applyPhoneQuickVideoCardSize(card, video, contentWidth, videoHeight, contentWidth + borderX, cardHeight);
   });
+  syncQuickVideoFrameLayout();
 }
 
 function resetQuickVideoMediaLayout() {
@@ -1840,6 +1866,14 @@ function resetQuickVideoMediaLayout() {
       if (media) {
         media.style.width = "";
         media.style.height = "";
+      }
+      const frame = card.querySelector(".quick-video-frame");
+      if (frame) {
+        frame.style.removeProperty("--quick-video-aspect");
+        frame.style.removeProperty("--quick-video-frame-width");
+        frame.style.removeProperty("--quick-video-frame-height");
+        frame.style.width = "";
+        frame.style.height = "";
       }
     }
   });
