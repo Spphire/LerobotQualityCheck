@@ -111,8 +111,8 @@ SSH key to another server without user authorization.
   transform is recorded by trajectory metadata.
 - Pose fallback uses `[x, y, z, qw, qx, qy, qz]`. Do not alter quaternion order or coordinate
   transforms based on visual intuition alone; inspect `device_type` and existing trajectory tests.
-- Position and quaternion transforms are independent. `iphone_umi1.0` uses the teleop-compatible
-  position transform for its z-up source positions, but its quaternion transform is `identity`.
+- Position and quaternion transforms are independent metadata fields. `iphone_umi1.0` follows the
+  robopocket convention: both transforms are `identity`, with y as the source and display up axis.
 - `teleoperation*`, `inference_r1`, and `rollout` use the teleop compatibility transform. Preserve the
   metadata-driven branch when adding device types.
 

@@ -3469,8 +3469,8 @@ def trajectory_metadata_for_episode(dataset: dict[str, Any], episode: dict[str, 
         or "teleoperation" in collection_mode_lower
     )
     is_iphone_umi = device_type_lower == "iphone_umi1.0"
-    position_transform = "teleop_rx_minus_90" if (is_teleop or is_iphone_umi) else "identity"
-    quaternion_transform = "identity" if is_iphone_umi else position_transform
+    position_transform = "teleop_rx_minus_90" if is_teleop else "identity"
+    quaternion_transform = position_transform
 
     return {
         "device_type": device_type,
@@ -3480,7 +3480,7 @@ def trajectory_metadata_for_episode(dataset: dict[str, Any], episode: dict[str, 
         "position_transform": position_transform,
         "quaternion_transform": quaternion_transform,
         "world_up_axis": "y",
-        "source_world_up_axis": "z" if is_iphone_umi else "y",
+        "source_world_up_axis": "y",
         "state_layout": "left8_right8_head7" if is_iphone_umi else "default",
         "quaternion_order": "wxyz",
     }

@@ -666,8 +666,11 @@ canvas {
 
 .quick-video {
   display: block;
-  width: 100%;
-  height: 100%;
+  width: var(--fitted-media-width, 100%);
+  height: var(--fitted-media-height, 100%);
+  max-width: 100%;
+  max-height: 100%;
+  flex: 0 0 auto;
   object-fit: contain;
 }
 
@@ -884,21 +887,14 @@ canvas {
   background: rgba(255, 255, 255, 0.36);
 }
 
-.video-aspect-container {
+.intrinsic-media-frame {
   display: flex;
   align-items: center;
   justify-content: center;
   min-width: 0;
   min-height: 0;
   overflow: hidden;
-  background: #0b0f14;
-}
-
-.quick-video {
-  display: block;
-  width: 100%;
-  height: 100%;
-  object-fit: contain;
+  background: var(--canvas);
 }
 
 .quick-video-card canvas {
@@ -1749,16 +1745,6 @@ body[data-mode="phone"] .quick-video-card {
   align-self: center;
   aspect-ratio: auto;
   grid-template-rows: 24px minmax(0, 1fr);
-}
-
-body[data-mode="phone"] .quick-video {
-  width: 100%;
-  height: 100%;
-}
-
-body[data-mode="phone"] .video-aspect-container {
-  width: var(--phone-video-width, 100%);
-  height: var(--phone-video-height, 100%);
 }
 
 .phone-drawer {

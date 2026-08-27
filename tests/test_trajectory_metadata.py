@@ -33,7 +33,7 @@ class TrajectoryMetadataTest(unittest.TestCase):
 
         self.assertEqual(metadata["transform"], "identity")
 
-    def test_iphone_umi_schema_uses_z_up_teleop_transform(self):
+    def test_iphone_umi_schema_matches_robopocket_identity_transform(self):
         info = {
             "robot_type": "umi_dual_arm_quat_3view",
             "features": {
@@ -50,15 +50,28 @@ class TrajectoryMetadataTest(unittest.TestCase):
             {"info": {**info, "device_type": "iphone_umi1.0"}},
             {},
         )
-        self.assertEqual(metadata["transform"], "teleop_rx_minus_90")
-        self.assertEqual(metadata["position_transform"], "teleop_rx_minus_90")
+        self.assertEqual(metadata["transform"], "identity")
+        self.assertEqual(metadata["position_transform"], "identity")
         self.assertEqual(metadata["quaternion_transform"], "identity")
-        self.assertEqual(metadata["source_world_up_axis"], "z")
+        self.assertEqual(metadata["source_world_up_axis"], "y")
         self.assertEqual(metadata["world_up_axis"], "y")
         self.assertEqual(metadata["state_layout"], "left8_right8_head7")
         self.assertEqual(metadata["quaternion_order"], "wxyz")
 
         self.assertEqual(server.dataset_device_type(info), "iphone_umi1.0")
+
+        robopocket_metadata = server.trajectory_metadata_for_episode(
+            {"info": {}},
+            {"device_type": "robopocketpro"},
+        )
+        for field in (
+            "transform",
+            "position_transform",
+            "quaternion_transform",
+            "source_world_up_axis",
+            "world_up_axis",
+        ):
+            self.assertEqual(metadata[field], robopocket_metadata[field])
 
         invalid = {**info, "features": {**info["features"], "state": {"dtype": "float32", "shape": [22]}}}
         self.assertFalse(server.iphone_umi_schema(invalid))
